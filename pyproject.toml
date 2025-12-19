@@ -1,0 +1,77 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pytest-review"
+version = "0.1.0"
+description = "A pytest plugin that reviews the quality of tests"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+authors = [
+    { name = "Shakeeb Alireza" }
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: Pytest",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Testing",
+]
+dependencies = [
+    "pytest>=7.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+]
+
+[project.entry-points.pytest11]
+review = "pytest_review.plugin"
+
+[project.urls]
+Homepage = "https://github.com/shakeeb-alireza/pytest-review"
+Repository = "https://github.com/shakeeb-alireza/pytest-review"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pytest_review"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_ignores = true
+strict = true
+
+[tool.pytest-review]
+enabled = true
+strict = false
+min_score = 0
+
+[tool.pytest-review.analyzers]
+assertions = { enabled = true, min_assertions = 1 }
+naming = { enabled = true, min_length = 10 }
+complexity = { enabled = true, max_statements = 20, max_depth = 3 }
+performance = { enabled = true, slow_threshold_ms = 500 }
