@@ -22,6 +22,14 @@ if TYPE_CHECKING:
 class GlobalModificationVisitor(ast.NodeVisitor):
     """AST visitor that detects potential global state modifications."""
 
+    # Methods that mutate mutable objects
+    MUTATING_METHODS = {
+        "append", "extend", "insert", "remove", "pop", "clear",
+        "add", "discard", "update", "intersection_update",
+        "difference_update", "symmetric_difference_update",
+        "setdefault", "popitem",
+    }
+
     def __init__(self) -> None:
         self.global_writes: list[tuple[int, str]] = []  # (line, name)
         self.global_declarations: list[str] = []
@@ -47,6 +55,24 @@ class GlobalModificationVisitor(ast.NodeVisitor):
                     self.class_attr_modifications.append(
                         (node.lineno, f"{name}.{node.attr}")
                     )
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        """Detect mutating method calls on class attributes."""
+        # Check for ClassName.attr.mutating_method() pattern
+        if isinstance(node.func, ast.Attribute):
+            method_name = node.func.attr
+            if method_name in self.MUTATING_METHODS:
+                # Check if it's called on a class attribute
+                if isinstance(node.func.value, ast.Attribute):
+                    inner = node.func.value
+                    if isinstance(inner.value, ast.Name):
+                        name = inner.value.id
+                        # Common class reference patterns
+                        if name in ("cls", "self.__class__") or name[0].isupper():
+                            self.class_attr_modifications.append(
+                                (node.lineno, f"{name}.{inner.attr}.{method_name}()")
+                            )
         self.generic_visit(node)
 
     def visit_Subscript(self, node: ast.Subscript) -> None:

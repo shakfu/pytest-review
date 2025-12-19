@@ -15,6 +15,7 @@ from pytest_review.analyzers.isolation import IsolationStaticAnalyzer
 from pytest_review.analyzers.naming import NamingAnalyzer
 from pytest_review.analyzers.patterns import PatternsAnalyzer
 from pytest_review.analyzers.performance import PerformanceAnalyzer
+from pytest_review.analyzers.smells import SmellsAnalyzer
 
 __all__ = [
     "Analyzer",
@@ -28,6 +29,7 @@ __all__ = [
     "PatternsAnalyzer",
     "PerformanceAnalyzer",
     "Severity",
+    "SmellsAnalyzer",
     "StaticAnalyzer",
     "TestItemInfo",
 ]

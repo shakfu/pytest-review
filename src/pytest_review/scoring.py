@@ -79,6 +79,7 @@ class ScoringEngine:
         "complexity": "simplicity",
         "patterns": "simplicity",
         "performance": "performance",
+        "smells": "clarity",
     }
 
     # Severity penalties per issue

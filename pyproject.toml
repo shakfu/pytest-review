@@ -1,16 +1,22 @@
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
 [project]
 name = "pytest-review"
 version = "0.1.0"
-description = "A pytest plugin that reviews the quality of tests"
+description = "A pytest plugin that reviews the quality of your tests"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.9"
 authors = [
-    { name = "Shakeeb Alireza" }
+    { name = "Shakeeb Alireza", email = "me@example.org" }
+]
+keywords = [
+    "pytest",
+    "pytest-plugin",
+    "testing",
+    "test-quality",
+    "code-review",
+    "static-analysis",
+    "linter",
+    "code-quality",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -36,6 +42,7 @@ dev = [
     "pytest-cov>=4.0.0",
     "ruff>=0.1.0",
     "mypy>=1.0.0",
+    "twine>=4.0.0",
 ]
 
 [project.entry-points.pytest11]
@@ -44,6 +51,10 @@ review = "pytest_review.plugin"
 [project.urls]
 Homepage = "https://github.com/shakeeb-alireza/pytest-review"
 Repository = "https://github.com/shakeeb-alireza/pytest-review"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pytest_review"]

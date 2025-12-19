@@ -14,6 +14,7 @@ from pytest_review.analyzers import (
     ComplexityAnalyzer,
     NamingAnalyzer,
     PatternsAnalyzer,
+    SmellsAnalyzer,
 )
 from pytest_review.analyzers.base import (
     AnalyzerResult,
@@ -86,6 +87,7 @@ class ReviewPlugin:
             ComplexityAnalyzer(self.review_config),
             PatternsAnalyzer(self.review_config),
             IsolationStaticAnalyzer(self.review_config),
+            SmellsAnalyzer(self.review_config),
         ]
 
         # Dynamic analyzers
