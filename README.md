@@ -194,9 +194,8 @@ Suggestions for improvement:
 
 ## Acknowledgments
 
-The smells analyzer is inspired by the [pytest-smell](https://github.com/maxpacs98/disertation) project
-from the dissertation "Detecting Test Smells in Python" by Maxim Pacsial. Test smell concepts are based
-on research by Van Deursen et al. ("Refactoring Test Code", 2001) and Meszaros ("xUnit Test Patterns", 2007).
+- The smells analyzer is inspired by the [pytest-smell](https://github.com/maxpacs98/disertation) project from the dissertation "Detecting Test Smells in Python" by Maxim Pacsial. 
+- Test smell concepts are based on research by Van Deursen et al. ("Refactoring Test Code", 2001) and Meszaros ("xUnit Test Patterns", 2007).
 
 ## Contributing
 
