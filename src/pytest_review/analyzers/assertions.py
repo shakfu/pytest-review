@@ -32,10 +32,13 @@ class AssertionVisitor(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> None:
         # Check for pytest assertion helpers like pytest.raises, pytest.warns
-        if isinstance(node.func, ast.Attribute):
-            if isinstance(node.func.value, ast.Name) and node.func.value.id == "pytest":
-                if node.func.attr in ("raises", "warns", "approx"):
-                    self.pytest_assertions.append(node)
+        if (
+            isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "pytest"
+            and node.func.attr in ("raises", "warns", "approx")
+        ):
+            self.pytest_assertions.append(node)
         self.generic_visit(node)
 
     def _check_trivial(self, node: ast.Assert) -> None:
@@ -54,12 +57,13 @@ class AssertionVisitor(ast.NodeVisitor):
             self.trivial_assertions.append((node, f"assert {test.value!r} (always truthy)"))
 
         # assert x == x (tautology)
-        elif isinstance(test, ast.Compare):
-            if len(test.ops) == 1 and isinstance(test.ops[0], ast.Eq):
-                left = ast.dump(test.left)
-                right = ast.dump(test.comparators[0])
-                if left == right:
-                    self.trivial_assertions.append((node, "comparing value to itself"))
+        elif (
+            isinstance(test, ast.Compare) and len(test.ops) == 1 and isinstance(test.ops[0], ast.Eq)
+        ):
+            left = ast.dump(test.left)
+            right = ast.dump(test.comparators[0])
+            if left == right:
+                self.trivial_assertions.append((node, "comparing value to itself"))
 
     @property
     def total_assertions(self) -> int:
@@ -74,7 +78,8 @@ class AssertionsAnalyzer(StaticAnalyzer):
 
     def __init__(self, config: ReviewConfig) -> None:
         super().__init__(config)
-        self._min_assertions = int(self.get_option("min_assertions", 1) or 1)
+        min_assert_opt = self.get_option("min_assertions", 1)
+        self._min_assertions = int(str(min_assert_opt)) if min_assert_opt is not None else 1
 
     def _analyze_ast(self, test: TestItemInfo, result: AnalyzerResult) -> None:
         visitor = AssertionVisitor()

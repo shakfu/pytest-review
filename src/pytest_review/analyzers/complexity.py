@@ -178,9 +178,12 @@ class ComplexityAnalyzer(StaticAnalyzer):
 
     def __init__(self, config: ReviewConfig) -> None:
         super().__init__(config)
-        self._max_statements = int(self.get_option("max_statements", 20) or 20)
-        self._max_depth = int(self.get_option("max_depth", 3) or 3)
-        self._max_complexity = int(self.get_option("max_complexity", 5) or 5)
+        max_stmt_opt = self.get_option("max_statements", 20)
+        max_depth_opt = self.get_option("max_depth", 3)
+        max_cplx_opt = self.get_option("max_complexity", 5)
+        self._max_statements = int(str(max_stmt_opt)) if max_stmt_opt is not None else 20
+        self._max_depth = int(str(max_depth_opt)) if max_depth_opt is not None else 3
+        self._max_complexity = int(str(max_cplx_opt)) if max_cplx_opt is not None else 5
 
     def _analyze_ast(self, test: TestItemInfo, result: AnalyzerResult) -> None:
         visitor = ComplexityVisitor()

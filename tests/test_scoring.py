@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from pytest_review.analyzers.base import AnalyzerResult, Issue, Severity
 from pytest_review.scoring import CategoryScore, ScoreBreakdown, ScoringEngine
 
@@ -170,8 +168,7 @@ class TestScoringEngine:
             AnalyzerResult(
                 analyzer_name="assertions",
                 issues=[
-                    Issue("assertions.missing", "empty test", Severity.ERROR)
-                    for _ in range(50)
+                    Issue("assertions.missing", "empty test", Severity.ERROR) for _ in range(50)
                 ],
             )
         ]

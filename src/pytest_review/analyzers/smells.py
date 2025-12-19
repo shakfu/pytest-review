@@ -34,12 +34,8 @@ class SmellsAnalyzer(StaticAnalyzer):
         self._max_assertions_without_message = analyzer_config.options.get(
             "max_assertions_without_message", 1
         )
-        self._check_magic_numbers = analyzer_config.options.get(
-            "check_magic_numbers", True
-        )
-        self._check_eager_test = analyzer_config.options.get(
-            "check_eager_test", True
-        )
+        self._check_magic_numbers = analyzer_config.options.get("check_magic_numbers", True)
+        self._check_eager_test = analyzer_config.options.get("check_eager_test", True)
 
     def _analyze_ast(self, test: TestItemInfo, result: AnalyzerResult) -> None:
         """Analyze test for smells."""
@@ -113,21 +109,23 @@ class SmellVisitor(ast.NodeVisitor):
     def _check_magic_number(self, node: ast.Assert) -> None:
         """Check for magic numbers in assertion."""
         for child in ast.walk(node.test):
-            if isinstance(child, ast.Constant):
-                if isinstance(child.value, (int, float)):
-                    if child.value not in self.ALLOWED_MAGIC_NUMBERS:
-                        self._result.add_issue(
-                            Issue(
-                                rule="smells.magic_number",
-                                message=f"Magic number {child.value} in assertion",
-                                severity=Severity.INFO,
-                                file_path=self._test.file_path,
-                                line=child.lineno,
-                                test_name=self._test.name,
-                                suggestion="Use a named constant or variable for clarity",
-                            )
-                        )
-                        return  # Only report once per assertion
+            if (
+                isinstance(child, ast.Constant)
+                and isinstance(child.value, (int, float))
+                and child.value not in self.ALLOWED_MAGIC_NUMBERS
+            ):
+                self._result.add_issue(
+                    Issue(
+                        rule="smells.magic_number",
+                        message=f"Magic number {child.value} in assertion",
+                        severity=Severity.INFO,
+                        file_path=self._test.file_path,
+                        line=child.lineno,
+                        test_name=self._test.name,
+                        suggestion="Use a named constant or variable for clarity",
+                    )
+                )
+                return  # Only report once per assertion
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         """Check for skip decorators and visit body."""
@@ -141,9 +139,7 @@ class SmellVisitor(ast.NodeVisitor):
         self.generic_visit(node)
         self._finalize_checks()
 
-    def _check_skip_decorator(
-        self, node: ast.FunctionDef | ast.AsyncFunctionDef
-    ) -> None:
+    def _check_skip_decorator(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         """Check if test has skip decorator."""
         for decorator in node.decorator_list:
             decorator_name = self._get_decorator_name(decorator)
@@ -174,13 +170,13 @@ class SmellVisitor(ast.NodeVisitor):
         if isinstance(decorator, ast.Name):
             return decorator.id
         elif isinstance(decorator, ast.Attribute):
-            parts = []
-            node = decorator
-            while isinstance(node, ast.Attribute):
-                parts.append(node.attr)
-                node = node.value
-            if isinstance(node, ast.Name):
-                parts.append(node.id)
+            parts: list[str] = []
+            current: ast.expr = decorator
+            while isinstance(current, ast.Attribute):
+                parts.append(current.attr)
+                current = current.value
+            if isinstance(current, ast.Name):
+                parts.append(current.id)
             return ".".join(reversed(parts))
         elif isinstance(decorator, ast.Call):
             return self._get_decorator_name(decorator.func)
@@ -241,7 +237,7 @@ class SmellVisitor(ast.NodeVisitor):
                     file_path=self._test.file_path,
                     line=duplicates[0][0],
                     test_name=self._test.name,
-                    suggestion="Remove duplicate assertions or verify they test different scenarios",
+                    suggestion="Remove duplicates or verify they test different scenarios",
                 )
             )
 
@@ -252,13 +248,44 @@ class SmellVisitor(ast.NodeVisitor):
 
         # Filter out common assertion helpers and built-ins
         excluded = {
-            "len", "str", "int", "float", "list", "dict", "set", "tuple",
-            "isinstance", "hasattr", "getattr", "type", "id", "repr",
-            "sorted", "reversed", "enumerate", "zip", "map", "filter",
-            "any", "all", "sum", "min", "max", "abs", "round",
-            "assertTrue", "assertFalse", "assertEqual", "assertNotEqual",
-            "assertIn", "assertNotIn", "assertIs", "assertIsNot",
-            "assertIsNone", "assertIsNotNone", "assertRaises",
+            "len",
+            "str",
+            "int",
+            "float",
+            "list",
+            "dict",
+            "set",
+            "tuple",
+            "isinstance",
+            "hasattr",
+            "getattr",
+            "type",
+            "id",
+            "repr",
+            "sorted",
+            "reversed",
+            "enumerate",
+            "zip",
+            "map",
+            "filter",
+            "any",
+            "all",
+            "sum",
+            "min",
+            "max",
+            "abs",
+            "round",
+            "assertTrue",
+            "assertFalse",
+            "assertEqual",
+            "assertNotEqual",
+            "assertIn",
+            "assertNotIn",
+            "assertIs",
+            "assertIsNot",
+            "assertIsNone",
+            "assertIsNotNone",
+            "assertRaises",
         }
 
         distinct_targets = self._call_targets - excluded
@@ -276,6 +303,6 @@ class SmellVisitor(ast.NodeVisitor):
                     file_path=self._test.file_path,
                     line=self._test.line,
                     test_name=self._test.name,
-                    suggestion="Consider splitting into focused tests that each verify one behavior",
+                    suggestion="Consider splitting into focused tests for each behavior",
                 )
             )

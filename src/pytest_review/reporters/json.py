@@ -87,9 +87,7 @@ class JsonReporter:
                     "metadata": {},
                 }
             analyzer_data[name]["issue_count"] += result.issue_count
-            analyzer_data[name]["issues"].extend(
-                [self._issue_to_dict(i) for i in result.issues]
-            )
+            analyzer_data[name]["issues"].extend([self._issue_to_dict(i) for i in result.issues])
             # Merge metadata
             for key, value in result.metadata.items():
                 if key not in analyzer_data[name]["metadata"]:

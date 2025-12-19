@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 from pytest_review.analyzers.base import AnalyzerResult, Issue, Severity
 
@@ -34,7 +33,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         }}
 
         body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background-color: var(--color-bg);
             color: var(--color-text);
             line-height: 1.6;
@@ -411,7 +410,8 @@ class HtmlReporter:
 
         suggestion_html = ""
         if issue.suggestion:
-            suggestion_html = f'<div class="issue-suggestion">{self._escape(issue.suggestion)}</div>'
+            escaped = self._escape(issue.suggestion)
+            suggestion_html = f'<div class="issue-suggestion">{escaped}</div>'
 
         test_name = f" [{issue.test_name}]" if issue.test_name else ""
 

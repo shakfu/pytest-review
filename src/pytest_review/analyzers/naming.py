@@ -39,7 +39,8 @@ class NamingAnalyzer(StaticAnalyzer):
 
     def __init__(self, config: ReviewConfig) -> None:
         super().__init__(config)
-        self._min_length = int(self.get_option("min_length", 10) or 10)
+        min_len_opt = self.get_option("min_length", 10)
+        self._min_length = int(str(min_len_opt)) if min_len_opt is not None else 10
         self._require_docstring = bool(self.get_option("require_docstring", False))
 
     def _analyze_ast(self, test: TestItemInfo, result: AnalyzerResult) -> None:
@@ -113,7 +114,7 @@ class NamingAnalyzer(StaticAnalyzer):
             result.add_issue(
                 Issue(
                     rule="naming.unclear_abbreviation",
-                    message=f"Test name contains unclear abbreviations: {', '.join(unclear_abbrevs)}",
+                    message=f"Unclear abbreviations: {', '.join(unclear_abbrevs)}",
                     severity=Severity.INFO,
                     file_path=test.file_path,
                     line=test.line,
@@ -139,10 +140,13 @@ class NamingAnalyzer(StaticAnalyzer):
             if part in ("test", "id", "ok", "db", "api", "url", "io", "ui", "ip", "os"):
                 continue
             # Single letter parts (except common ones) or 2-letter uncommon abbreviations
-            if len(part) == 1 and part not in ("a", "i"):
+            is_unclear_single = len(part) == 1 and part not in ("a", "i")
+            is_unclear_double = (
+                len(part) == 2
+                and part not in ("is", "in", "on", "to", "or", "an", "as", "at")
+                and not part.isdigit()
+                and part not in ("no", "if", "do", "my", "up")
+            )
+            if is_unclear_single or is_unclear_double:
                 unclear.append(part)
-            elif len(part) == 2 and part not in ("is", "in", "on", "to", "or", "an", "as", "at"):
-                # Could be an abbreviation - only flag if it looks like one
-                if not part.isdigit() and part not in ("no", "if", "do", "my", "up"):
-                    unclear.append(part)
         return unclear

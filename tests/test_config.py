@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
 from pytest_review.config import AnalyzerConfig, ReviewConfig

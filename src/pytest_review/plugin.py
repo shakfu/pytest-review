@@ -19,7 +19,6 @@ from pytest_review.analyzers import (
 from pytest_review.analyzers.base import (
     AnalyzerResult,
     DynamicAnalyzer,
-    Severity,
     StaticAnalyzer,
     TestItemInfo,
 )
@@ -35,7 +34,6 @@ if TYPE_CHECKING:
     from _pytest.config import Config
     from _pytest.config.argparsing import Parser
     from _pytest.python import Function
-    from _pytest.reports import TestReport
     from _pytest.terminal import TerminalReporter as PytestTerminalReporter
 
 
@@ -56,11 +54,7 @@ class ReviewPlugin:
 
     def _should_enable(self, config: Config) -> bool:
         """Determine if the plugin should run."""
-        # Check CLI flag
-        if config.getoption("review", default=False):
-            return True
-        # Check if enabled in config (but only if --review or pyproject enables it)
-        return False
+        return bool(config.getoption("review", default=False))
 
     def register_analyzer(self, analyzer: StaticAnalyzer | DynamicAnalyzer) -> None:
         """Register an analyzer with the plugin."""
@@ -95,15 +89,15 @@ class ReviewPlugin:
             PerformanceAnalyzer(self.review_config),
         ]
 
-        for analyzer in static_analyzers:
-            if allowed is not None and analyzer.name not in allowed:
+        for static_analyzer in static_analyzers:
+            if allowed is not None and static_analyzer.name not in allowed:
                 continue
-            self.register_analyzer(analyzer)
+            self.register_analyzer(static_analyzer)
 
-        for analyzer in dynamic_analyzers:
-            if allowed is not None and analyzer.name not in allowed:
+        for dynamic_analyzer in dynamic_analyzers:
+            if allowed is not None and dynamic_analyzer.name not in allowed:
                 continue
-            self.register_analyzer(analyzer)
+            self.register_analyzer(dynamic_analyzer)
 
     def collect_test_info(self, item: Function) -> TestItemInfo | None:
         """Extract test information from a pytest item."""
@@ -120,18 +114,20 @@ class ReviewPlugin:
             class_name = item.cls.__name__ if item.cls else None
 
             for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    if node.name == test_name:
-                        # Extract just this function's source
-                        func_source = ast.get_source_segment(source, node) or ""
-                        return TestItemInfo(
-                            name=test_name,
-                            file_path=file_path,
-                            line=node.lineno,
-                            node=node,
-                            source=func_source,
-                            class_name=class_name,
-                        )
+                if (
+                    isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and node.name == test_name
+                ):
+                    # Extract just this function's source
+                    func_source = ast.get_source_segment(source, node) or ""
+                    return TestItemInfo(
+                        name=test_name,
+                        file_path=file_path,
+                        line=node.lineno,
+                        node=node,
+                        source=func_source,
+                        class_name=class_name,
+                    )
         except (OSError, SyntaxError):
             pass
         return None
@@ -184,7 +180,7 @@ class ReviewPlugin:
         scoring_engine = ScoringEngine()
         return scoring_engine.get_simple_score(self._results, len(self._test_infos))
 
-    def get_score_breakdown(self) -> dict:
+    def get_score_breakdown(self) -> dict[str, object]:
         """Get detailed score breakdown."""
         scoring_engine = ScoringEngine()
         breakdown = scoring_engine.calculate_score(self._results, len(self._test_infos))
@@ -249,9 +245,7 @@ def pytest_configure(config: Config) -> None:
     global _plugin
 
     # Register marker
-    config.addinivalue_line(
-        "markers", "review_skip: skip this test from quality review"
-    )
+    config.addinivalue_line("markers", "review_skip: skip this test from quality review")
 
     # Create plugin instance
     _plugin = ReviewPlugin(config)
@@ -282,7 +276,7 @@ def pytest_collection_modifyitems(
                 _plugin._test_infos.append(test_info)
 
 
-@pytest.hookimpl(hookwrapper=True)
+@pytest.hookimpl(hookwrapper=True)  # type: ignore[untyped-decorator]
 def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None) -> object:
     """Hook into test execution to track timing."""
     global _plugin
@@ -299,9 +293,7 @@ def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None) -> 
     # We'll get the result in pytest_runtest_makereport
 
 
-def pytest_runtest_makereport(
-    item: pytest.Item, call: pytest.CallInfo[None]
-) -> None:
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) -> None:
     """Called after each test phase (setup, call, teardown)."""
     global _plugin
 

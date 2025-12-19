@@ -40,9 +40,7 @@ def test_modifies_global():
 
         result = analyzer.analyze(test_info)
 
-        global_issues = [
-            i for i in result.issues if i.rule == "isolation.global_modification"
-        ]
+        global_issues = [i for i in result.issues if i.rule == "isolation.global_modification"]
         assert len(global_issues) == 1
         assert "global counter" in global_issues[0].message
         assert global_issues[0].severity == Severity.WARNING
@@ -59,9 +57,7 @@ def test_modifies_class_attr():
 
         result = analyzer.analyze(test_info)
 
-        class_issues = [
-            i for i in result.issues if i.rule == "isolation.class_attr_modification"
-        ]
+        class_issues = [i for i in result.issues if i.rule == "isolation.class_attr_modification"]
         assert len(class_issues) == 1
         assert "cls.shared_state" in class_issues[0].message
 
@@ -77,9 +73,7 @@ def test_modifies_config():
 
         result = analyzer.analyze(test_info)
 
-        class_issues = [
-            i for i in result.issues if i.rule == "isolation.class_attr_modification"
-        ]
+        class_issues = [i for i in result.issues if i.rule == "isolation.class_attr_modification"]
         assert len(class_issues) == 1
         assert "Config.DEBUG" in class_issues[0].message
 
@@ -97,11 +91,7 @@ def test_clean_isolation():
         result = analyzer.analyze(test_info)
 
         # Should have no isolation issues
-        isolation_issues = [
-            i
-            for i in result.issues
-            if i.rule.startswith("isolation.")
-        ]
+        isolation_issues = [i for i in result.issues if i.rule.startswith("isolation.")]
         assert len(isolation_issues) == 0
 
     def test_stores_metadata(self) -> None:
@@ -134,9 +124,7 @@ def test_instance_attr():
 
         # self.attr modifications are fine (instance, not class)
         # The analyzer doesn't flag 'self' since it's instance-level
-        class_issues = [
-            i for i in result.issues if i.rule == "isolation.class_attr_modification"
-        ]
+        class_issues = [i for i in result.issues if i.rule == "isolation.class_attr_modification"]
         # 'self' starts with lowercase so won't be flagged as class modification
         assert len(class_issues) == 0
 

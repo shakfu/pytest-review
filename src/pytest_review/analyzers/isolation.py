@@ -24,10 +24,20 @@ class GlobalModificationVisitor(ast.NodeVisitor):
 
     # Methods that mutate mutable objects
     MUTATING_METHODS = {
-        "append", "extend", "insert", "remove", "pop", "clear",
-        "add", "discard", "update", "intersection_update",
-        "difference_update", "symmetric_difference_update",
-        "setdefault", "popitem",
+        "append",
+        "extend",
+        "insert",
+        "remove",
+        "pop",
+        "clear",
+        "add",
+        "discard",
+        "update",
+        "intersection_update",
+        "difference_update",
+        "symmetric_difference_update",
+        "setdefault",
+        "popitem",
     }
 
     def __init__(self) -> None:
@@ -46,15 +56,11 @@ class GlobalModificationVisitor(ast.NodeVisitor):
     def visit_Attribute(self, node: ast.Attribute) -> None:
         """Detect class/module attribute modifications."""
         # Check if this is a write context (assignment target)
-        if isinstance(node.ctx, ast.Store):
-            # Check for cls.attr or ClassName.attr patterns
-            if isinstance(node.value, ast.Name):
-                name = node.value.id
-                # Common class reference patterns
-                if name in ("cls", "self.__class__") or name[0].isupper():
-                    self.class_attr_modifications.append(
-                        (node.lineno, f"{name}.{node.attr}")
-                    )
+        if isinstance(node.ctx, ast.Store) and isinstance(node.value, ast.Name):
+            name = node.value.id
+            # Common class reference patterns
+            if name in ("cls", "self.__class__") or name[0].isupper():
+                self.class_attr_modifications.append((node.lineno, f"{name}.{node.attr}"))
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
@@ -62,32 +68,31 @@ class GlobalModificationVisitor(ast.NodeVisitor):
         # Check for ClassName.attr.mutating_method() pattern
         if isinstance(node.func, ast.Attribute):
             method_name = node.func.attr
-            if method_name in self.MUTATING_METHODS:
-                # Check if it's called on a class attribute
-                if isinstance(node.func.value, ast.Attribute):
-                    inner = node.func.value
-                    if isinstance(inner.value, ast.Name):
-                        name = inner.value.id
-                        # Common class reference patterns
-                        if name in ("cls", "self.__class__") or name[0].isupper():
-                            self.class_attr_modifications.append(
-                                (node.lineno, f"{name}.{inner.attr}.{method_name}()")
-                            )
+            if method_name in self.MUTATING_METHODS and isinstance(node.func.value, ast.Attribute):
+                inner = node.func.value
+                if isinstance(inner.value, ast.Name):
+                    name = inner.value.id
+                    # Common class reference patterns
+                    if name in ("cls", "self.__class__") or name[0].isupper():
+                        self.class_attr_modifications.append(
+                            (node.lineno, f"{name}.{inner.attr}.{method_name}()")
+                        )
         self.generic_visit(node)
 
     def visit_Subscript(self, node: ast.Subscript) -> None:
         """Detect modifications to module-level dicts/lists."""
-        if isinstance(node.ctx, ast.Store):
-            # Check for patterns like module.dict[key] = value
-            if isinstance(node.value, ast.Attribute):
-                if isinstance(node.value.value, ast.Name):
-                    module_name = node.value.value.id
-                    attr_name = node.value.attr
-                    # Check if it looks like a module reference
-                    if module_name in sys.modules or module_name[0].islower():
-                        self.class_attr_modifications.append(
-                            (node.lineno, f"{module_name}.{attr_name}[...]")
-                        )
+        if (
+            isinstance(node.ctx, ast.Store)
+            and isinstance(node.value, ast.Attribute)
+            and isinstance(node.value.value, ast.Name)
+        ):
+            module_name = node.value.value.id
+            attr_name = node.value.attr
+            # Check if it looks like a module reference
+            if module_name in sys.modules or module_name[0].islower():
+                self.class_attr_modifications.append(
+                    (node.lineno, f"{module_name}.{attr_name}[...]")
+                )
         self.generic_visit(node)
 
 
@@ -156,7 +161,7 @@ class IsolationDynamicAnalyzer(DynamicAnalyzer):
             return {}
 
         module = sys.modules[module_name]
-        snapshot = {}
+        snapshot: dict[str, Any] = {}
 
         for name in dir(module):
             if name.startswith("_"):
@@ -179,9 +184,7 @@ class IsolationDynamicAnalyzer(DynamicAnalyzer):
 
         return snapshot
 
-    def _compare_snapshots(
-        self, before: dict[str, Any], after: dict[str, Any]
-    ) -> list[str]:
+    def _compare_snapshots(self, before: dict[str, Any], after: dict[str, Any]) -> list[str]:
         """Compare two snapshots and return list of modified attributes."""
         modified = []
 

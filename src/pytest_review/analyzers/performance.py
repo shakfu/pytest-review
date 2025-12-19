@@ -9,7 +9,6 @@ from pytest_review.analyzers.base import (
     DynamicAnalyzer,
     Issue,
     Severity,
-    TestItemInfo,
 )
 
 if TYPE_CHECKING:
@@ -24,9 +23,11 @@ class PerformanceAnalyzer(DynamicAnalyzer):
 
     def __init__(self, config: ReviewConfig) -> None:
         super().__init__(config)
-        self._slow_threshold_ms = float(self.get_option("slow_threshold_ms", 500) or 500)
-        self._very_slow_threshold_ms = float(
-            self.get_option("very_slow_threshold_ms", 2000) or 2000
+        slow_opt = self.get_option("slow_threshold_ms", 500)
+        very_slow_opt = self.get_option("very_slow_threshold_ms", 2000)
+        self._slow_threshold_ms = float(str(slow_opt)) if slow_opt is not None else 500.0
+        self._very_slow_threshold_ms = (
+            float(str(very_slow_opt)) if very_slow_opt is not None else 2000.0
         )
         self._test_durations: dict[str, float] = {}
         self._test_results: dict[str, AnalyzerResult] = {}
@@ -85,10 +86,6 @@ class PerformanceAnalyzer(DynamicAnalyzer):
             "avg_ms": sum(durations) / len(durations),
             "min_ms": min(durations),
             "max_ms": max(durations),
-            "slow_count": sum(
-                1 for d in durations if d >= self._slow_threshold_ms
-            ),
-            "very_slow_count": sum(
-                1 for d in durations if d >= self._very_slow_threshold_ms
-            ),
+            "slow_count": sum(1 for d in durations if d >= self._slow_threshold_ms),
+            "very_slow_count": sum(1 for d in durations if d >= self._very_slow_threshold_ms),
         }

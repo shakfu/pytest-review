@@ -1,6 +1,6 @@
 [project]
 name = "pytest-review"
-version = "0.1.0"
+version = "0.1.1"
 description = "A pytest plugin that reviews the quality of your tests"
 readme = "README.md"
 license = "MIT"
@@ -36,11 +36,10 @@ dependencies = [
     "pytest>=7.0.0",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
-    "pytest>=7.0.0",
+    "ruff>=0.14.10",
     "pytest-cov>=4.0.0",
-    "ruff>=0.1.0",
     "mypy>=1.0.0",
     "twine>=4.0.0",
 ]
@@ -49,8 +48,8 @@ dev = [
 review = "pytest_review.plugin"
 
 [project.urls]
-Homepage = "https://github.com/shakeeb-alireza/pytest-review"
-Repository = "https://github.com/shakeeb-alireza/pytest-review"
+Homepage = "https://github.com/shakfu/pytest-review"
+Repository = "https://github.com/shakfu/pytest-review"
 
 [build-system]
 requires = ["hatchling"]
@@ -66,6 +65,7 @@ addopts = "-v"
 [tool.ruff]
 line-length = 100
 target-version = "py39"
+exclude = ["examples/"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
@@ -75,6 +75,12 @@ python_version = "3.9"
 warn_return_any = true
 warn_unused_ignores = true
 strict = true
+exclude = ["examples/", ".venv/"]
+
+[[tool.mypy.overrides]]
+module = ["_pytest.*", "pytest.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
 
 [tool.pytest-review]
 enabled = true
@@ -86,3 +92,4 @@ assertions = { enabled = true, min_assertions = 1 }
 naming = { enabled = true, min_length = 10 }
 complexity = { enabled = true, max_statements = 20, max_depth = 3 }
 performance = { enabled = true, slow_threshold_ms = 500 }
+

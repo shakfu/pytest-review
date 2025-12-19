@@ -47,9 +47,9 @@ def test_many_statements():
     {statements}
     assert True
 """
-        config = ReviewConfig.from_dict({
-            "analyzers": {"complexity": {"enabled": True, "max_statements": 20}}
-        })
+        config = ReviewConfig.from_dict(
+            {"analyzers": {"complexity": {"enabled": True, "max_statements": 20}}}
+        )
         analyzer = ComplexityAnalyzer(config)
         test_info = make_test_info(source.strip(), "test_many_statements")
 
@@ -67,9 +67,9 @@ def test_deep_nesting():
                 if True:
                     assert True
 """
-        config = ReviewConfig.from_dict({
-            "analyzers": {"complexity": {"enabled": True, "max_depth": 3}}
-        })
+        config = ReviewConfig.from_dict(
+            {"analyzers": {"complexity": {"enabled": True, "max_depth": 3}}}
+        )
         analyzer = ComplexityAnalyzer(config)
         test_info = make_test_info(source.strip(), "test_deep_nesting")
 
@@ -96,9 +96,9 @@ def test_complex():
     while x > 0:
         x -= 1
 """
-        config = ReviewConfig.from_dict({
-            "analyzers": {"complexity": {"enabled": True, "max_complexity": 3}}
-        })
+        config = ReviewConfig.from_dict(
+            {"analyzers": {"complexity": {"enabled": True, "max_complexity": 3}}}
+        )
         analyzer = ComplexityAnalyzer(config)
         test_info = make_test_info(source.strip(), "test_complex")
 
@@ -114,9 +114,9 @@ def test_boolean_complexity():
     if x > 0 and x < 10 or x == 100:
         assert True
 """
-        config = ReviewConfig.from_dict({
-            "analyzers": {"complexity": {"enabled": True, "max_complexity": 2}}
-        })
+        config = ReviewConfig.from_dict(
+            {"analyzers": {"complexity": {"enabled": True, "max_complexity": 2}}}
+        )
         analyzer = ComplexityAnalyzer(config)
         test_info = make_test_info(source.strip(), "test_boolean_complexity")
 
@@ -155,9 +155,9 @@ def test_with_statement():
             for line in f:
                 assert line
 """
-        config = ReviewConfig.from_dict({
-            "analyzers": {"complexity": {"enabled": True, "max_depth": 2}}
-        })
+        config = ReviewConfig.from_dict(
+            {"analyzers": {"complexity": {"enabled": True, "max_depth": 2}}}
+        )
         analyzer = ComplexityAnalyzer(config)
         test_info = make_test_info(source.strip(), "test_with_statement")
 

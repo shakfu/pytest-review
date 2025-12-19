@@ -124,9 +124,9 @@ def test_raises():
 def test_one_assertion():
     assert True is True
 """
-        config = ReviewConfig.from_dict({
-            "analyzers": {"assertions": {"enabled": True, "min_assertions": 2}}
-        })
+        config = ReviewConfig.from_dict(
+            {"analyzers": {"assertions": {"enabled": True, "min_assertions": 2}}}
+        )
         analyzer = AssertionsAnalyzer(config)
         test_info = make_test_info(source.strip(), "test_one_assertion")
 

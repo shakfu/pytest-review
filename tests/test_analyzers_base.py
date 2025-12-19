@@ -223,9 +223,7 @@ class TestStaticAnalyzer:
         assert analyzer.enabled is True
 
     def test_analyzer_respects_config(self) -> None:
-        config = ReviewConfig.from_dict({
-            "analyzers": {"dummy": {"enabled": False}}
-        })
+        config = ReviewConfig.from_dict({"analyzers": {"dummy": {"enabled": False}}})
         analyzer = DummyAnalyzer(config)
         assert analyzer.enabled is False
 
@@ -239,13 +237,15 @@ class TestStaticAnalyzer:
             tree = ast.parse(source)
             func_node = tree.body[0]
             assert isinstance(func_node, ast.FunctionDef)
-            tests.append(TestItemInfo(
-                name=name,
-                file_path=Path("test.py"),
-                line=1,
-                node=func_node,
-                source=source,
-            ))
+            tests.append(
+                TestItemInfo(
+                    name=name,
+                    file_path=Path("test.py"),
+                    line=1,
+                    node=func_node,
+                    source=source,
+                )
+            )
 
         results = analyzer.analyze_all(tests)
         assert len(results) == 3

@@ -60,9 +60,9 @@ class TestNamingAnalyzer:
 
     def test_detects_short_name(self) -> None:
         source = "def test_add(): pass"
-        config = ReviewConfig.from_dict({
-            "analyzers": {"naming": {"enabled": True, "min_length": 10}}
-        })
+        config = ReviewConfig.from_dict(
+            {"analyzers": {"naming": {"enabled": True, "min_length": 10}}}
+        )
         analyzer = NamingAnalyzer(config)
         test_info = make_test_info(source, "test_add")
 
@@ -99,9 +99,9 @@ class TestNamingAnalyzer:
 
     def test_detects_missing_docstring_when_required(self) -> None:
         source = "def test_something_important(): pass"
-        config = ReviewConfig.from_dict({
-            "analyzers": {"naming": {"enabled": True, "require_docstring": True}}
-        })
+        config = ReviewConfig.from_dict(
+            {"analyzers": {"naming": {"enabled": True, "require_docstring": True}}}
+        )
         analyzer = NamingAnalyzer(config)
         test_info = make_test_info(source, "test_something_important")
 
@@ -116,9 +116,9 @@ def test_with_docs():
     """This test verifies the documentation requirement."""
     pass
 '''
-        config = ReviewConfig.from_dict({
-            "analyzers": {"naming": {"enabled": True, "require_docstring": True}}
-        })
+        config = ReviewConfig.from_dict(
+            {"analyzers": {"naming": {"enabled": True, "require_docstring": True}}}
+        )
         analyzer = NamingAnalyzer(config)
         test_info = make_test_info(source.strip(), "test_with_docs")
 

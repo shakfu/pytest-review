@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-try:
+if sys.version_info >= (3, 11):
     import tomllib
-except ImportError:
-    import tomli as tomllib  # type: ignore[import-not-found,no-redef]
+else:
+    import tomli as tomllib  # type: ignore[import-not-found]
 
 
 @dataclass

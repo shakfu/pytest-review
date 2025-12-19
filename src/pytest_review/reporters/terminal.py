@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from _pytest.terminal import TerminalReporter as PytestTerminalReporter
 
-    from pytest_review.analyzers.base import AnalyzerResult, Issue, Severity
+    from pytest_review.analyzers.base import AnalyzerResult, Issue
 
 
 class TerminalReporter:
@@ -84,15 +84,9 @@ class TerminalReporter:
 
     def write_summary(self, results: list[AnalyzerResult], total_tests: int) -> None:
         """Write summary statistics."""
-        error_count = sum(
-            1 for r in results for i in r.issues if i.severity.value == "error"
-        )
-        warning_count = sum(
-            1 for r in results for i in r.issues if i.severity.value == "warning"
-        )
-        info_count = sum(
-            1 for r in results for i in r.issues if i.severity.value == "info"
-        )
+        error_count = sum(1 for r in results for i in r.issues if i.severity.value == "error")
+        warning_count = sum(1 for r in results for i in r.issues if i.severity.value == "warning")
+        info_count = sum(1 for r in results for i in r.issues if i.severity.value == "info")
 
         self._tw.sep("-", "Summary")
         self._tw.line(f"  Tests analyzed: {total_tests}")

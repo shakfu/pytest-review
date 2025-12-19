@@ -21,9 +21,9 @@ class TestPerformanceAnalyzer:
         assert len(results) == 0
 
     def test_detects_slow_test(self) -> None:
-        config = ReviewConfig.from_dict({
-            "analyzers": {"performance": {"enabled": True, "slow_threshold_ms": 100}}
-        })
+        config = ReviewConfig.from_dict(
+            {"analyzers": {"performance": {"enabled": True, "slow_threshold_ms": 100}}}
+        )
         analyzer = PerformanceAnalyzer(config)
 
         analyzer.on_test_start("test_slow")
@@ -35,15 +35,17 @@ class TestPerformanceAnalyzer:
         assert results[0].issues[0].severity == Severity.INFO
 
     def test_detects_very_slow_test(self) -> None:
-        config = ReviewConfig.from_dict({
-            "analyzers": {
-                "performance": {
-                    "enabled": True,
-                    "slow_threshold_ms": 100,
-                    "very_slow_threshold_ms": 500,
+        config = ReviewConfig.from_dict(
+            {
+                "analyzers": {
+                    "performance": {
+                        "enabled": True,
+                        "slow_threshold_ms": 100,
+                        "very_slow_threshold_ms": 500,
+                    }
                 }
             }
-        })
+        )
         analyzer = PerformanceAnalyzer(config)
 
         analyzer.on_test_start("test_very_slow")
@@ -55,9 +57,9 @@ class TestPerformanceAnalyzer:
         assert results[0].issues[0].severity == Severity.WARNING
 
     def test_tracks_multiple_tests(self) -> None:
-        config = ReviewConfig.from_dict({
-            "analyzers": {"performance": {"enabled": True, "slow_threshold_ms": 100}}
-        })
+        config = ReviewConfig.from_dict(
+            {"analyzers": {"performance": {"enabled": True, "slow_threshold_ms": 100}}}
+        )
         analyzer = PerformanceAnalyzer(config)
 
         # Fast test
@@ -72,9 +74,9 @@ class TestPerformanceAnalyzer:
         assert len(results) == 1  # Only the slow test
 
     def test_stores_duration_in_metadata(self) -> None:
-        config = ReviewConfig.from_dict({
-            "analyzers": {"performance": {"enabled": True, "slow_threshold_ms": 10}}
-        })
+        config = ReviewConfig.from_dict(
+            {"analyzers": {"performance": {"enabled": True, "slow_threshold_ms": 10}}}
+        )
         analyzer = PerformanceAnalyzer(config)
 
         analyzer.on_test_start("test_example")
@@ -124,9 +126,7 @@ class TestPerformanceAnalyzerIntegration:
         # With default 500ms threshold, 150ms should be fine
         assert "performance.slow" not in result.stdout.str()
 
-    def test_detects_slow_test_with_low_threshold(
-        self, pytester: pytest.Pytester
-    ) -> None:
+    def test_detects_slow_test_with_low_threshold(self, pytester: pytest.Pytester) -> None:
         # Create a pyproject.toml with low threshold
         pytester.makefile(
             ".toml",

@@ -65,9 +65,7 @@ class TestPluginOptions:
 class TestPluginOutput:
     """Test plugin output formatting."""
 
-    def test_shows_quality_excellent_when_no_issues(
-        self, pytester: pytest.Pytester
-    ) -> None:
+    def test_shows_quality_excellent_when_no_issues(self, pytester: pytest.Pytester) -> None:
         """Shows excellent quality when no issues found."""
         # Use a well-formed test that passes all analyzers
         pytester.makepyfile("""
@@ -100,4 +98,5 @@ class TestPluginOutput:
         result = pytester.runpytest("--review")
         # Should detect issues with this test
         assert "Quality: NEEDS IMPROVEMENT" in result.stdout.str()
-        assert "assertions.trivial" in result.stdout.str() or "Trivial assertion" in result.stdout.str()
+        output = result.stdout.str()
+        assert "assertions.trivial" in output or "Trivial assertion" in output
