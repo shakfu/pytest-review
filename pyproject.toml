@@ -1,12 +1,12 @@
 [project]
 name = "pytest-review"
-version = "0.1.1"
+version = "0.1.2"
 description = "A pytest plugin that reviews the quality of your tests"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.9"
 authors = [
-    { name = "Shakeeb Alireza", email = "me@example.org" }
+    { name = "Shakeeb Alireza", email = "shakfu@users.noreply.github.com" }
 ]
 keywords = [
     "pytest",

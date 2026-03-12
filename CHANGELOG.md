@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2]
+
 ### Added
 
 - `--review-diff` option to analyze only tests in files changed relative to a base branch. Supports auto-detection of main/master or an explicit branch name (e.g., `--review-diff=develop`).
