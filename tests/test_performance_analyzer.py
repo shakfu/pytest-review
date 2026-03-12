@@ -101,10 +101,30 @@ class TestPerformanceAnalyzer:
         analyzer.on_test_end("test_3", passed=True, duration=0.3)  # 300ms
 
         stats = analyzer.get_statistics()
+        assert stats["count"] == 3
         assert stats["min_ms"] == pytest.approx(100, rel=0.1)
         assert stats["max_ms"] == pytest.approx(300, rel=0.1)
         assert stats["avg_ms"] == pytest.approx(200, rel=0.1)
+        assert stats["median_ms"] == pytest.approx(200, rel=0.1)
+        assert stats["p95_ms"] == pytest.approx(300, rel=0.1)
         assert stats["total_ms"] == pytest.approx(600, rel=0.1)
+
+    def test_statistics_even_count_median(self) -> None:
+        config = ReviewConfig()
+        analyzer = PerformanceAnalyzer(config)
+
+        for i, dur in enumerate([0.1, 0.2, 0.3, 0.4]):
+            analyzer.on_test_start(f"test_{i}")
+            analyzer.on_test_end(f"test_{i}", passed=True, duration=dur)
+
+        stats = analyzer.get_statistics()
+        # Median of [100, 200, 300, 400] = (200+300)/2 = 250
+        assert stats["median_ms"] == pytest.approx(250, rel=0.1)
+
+    def test_statistics_empty(self) -> None:
+        config = ReviewConfig()
+        analyzer = PerformanceAnalyzer(config)
+        assert analyzer.get_statistics() == {}
 
 
 class TestPerformanceAnalyzerIntegration:
@@ -125,6 +145,19 @@ class TestPerformanceAnalyzerIntegration:
         result.assert_outcomes(passed=1)
         # With default 500ms threshold, 150ms should be fine
         assert "performance.slow" not in result.stdout.str()
+
+    def test_aggregate_stats_shown_in_terminal(self, pytester: pytest.Pytester) -> None:
+        pytester.makepyfile("""
+            def test_fast_operation_for_stats_check():
+                assert 1 + 1 == 2
+        """)
+        result = pytester.runpytest("--review", "--review-only=performance")
+        result.assert_outcomes(passed=1)
+        output = result.stdout.str()
+        assert "Performance" in output
+        assert "Mean:" in output
+        assert "Median:" in output
+        assert "P95:" in output
 
     def test_detects_slow_test_with_low_threshold(self, pytester: pytest.Pytester) -> None:
         # Create a pyproject.toml with low threshold

@@ -147,6 +147,70 @@ def test_metadata():
         assert "cyclomatic_complexity" in result.metadata
         assert result.metadata["max_depth"] == 2  # if -> for
 
+    def test_detects_low_assertion_ratio(self) -> None:
+        # 11 assignment statements + 1 assert = 12 total, 1/12 < 10%
+        statements = "\n    ".join([f"x{i} = {i}" for i in range(11)])
+        source = f"""
+def test_low_ratio():
+    {statements}
+    assert True
+"""
+        config = ReviewConfig()
+        analyzer = ComplexityAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_low_ratio")
+
+        result = analyzer.analyze(test_info)
+
+        ratio_issues = [i for i in result.issues if i.rule == "complexity.low_assertion_ratio"]
+        assert len(ratio_issues) == 1
+
+    def test_no_low_ratio_with_enough_assertions(self) -> None:
+        source = """
+def test_good_ratio():
+    x = compute()
+    assert x > 0
+    assert x < 100
+"""
+        config = ReviewConfig()
+        analyzer = ComplexityAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_good_ratio")
+
+        result = analyzer.analyze(test_info)
+
+        ratio_issues = [i for i in result.issues if i.rule == "complexity.low_assertion_ratio"]
+        assert len(ratio_issues) == 0
+
+    def test_detects_excessive_parametrize(self) -> None:
+        cases = ", ".join([f"({i},)" for i in range(25)])
+        source = f"""
+@pytest.mark.parametrize("x", [{cases}])
+def test_many_params(x):
+    assert x >= 0
+"""
+        config = ReviewConfig()
+        analyzer = ComplexityAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_many_params")
+
+        result = analyzer.analyze(test_info)
+
+        param_issues = [i for i in result.issues if i.rule == "complexity.excessive_parametrize"]
+        assert len(param_issues) == 1
+
+    def test_no_excessive_parametrize_under_limit(self) -> None:
+        source = """
+@pytest.mark.parametrize("x", [1, 2, 3, 4, 5])
+def test_few_params(x):
+    assert x > 0
+"""
+        config = ReviewConfig()
+        analyzer = ComplexityAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_few_params")
+
+        result = analyzer.analyze(test_info)
+
+        param_issues = [i for i in result.issues if i.rule == "complexity.excessive_parametrize"]
+        assert len(param_issues) == 0
+
     def test_with_context_counts_depth(self) -> None:
         source = """
 def test_with_statement():

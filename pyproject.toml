@@ -34,6 +34,7 @@ classifiers = [
 ]
 dependencies = [
     "pytest>=7.0.0",
+    "tomli>=1.0.0; python_version < '3.11'",
 ]
 
 [dependency-groups]
@@ -90,6 +91,6 @@ min_score = 0
 [tool.pytest-review.analyzers]
 assertions = { enabled = true, min_assertions = 1 }
 naming = { enabled = true, min_length = 10 }
-complexity = { enabled = true, max_statements = 20, max_depth = 3 }
-performance = { enabled = true, slow_threshold_ms = 500 }
+complexity = { enabled = true, max_statements = 20, max_depth = 3, max_complexity = 5 }
+performance = { enabled = true, slow_threshold_ms = 500, very_slow_threshold_ms = 2000 }
 

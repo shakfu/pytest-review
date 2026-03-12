@@ -33,7 +33,7 @@ class TerminalReporter:
         """Write the review section header."""
         self._tw.sep("=", "pytest-review: Test Quality Report", bold=True)
 
-    def write_issue(self, issue: Issue) -> None:
+    def write_issue(self, issue: Issue, analyzer_name: str | None = None) -> None:
         """Write a single issue to the terminal."""
         severity = issue.severity.value
         symbol = self.SEVERITY_SYMBOLS.get(severity, "?")
@@ -47,8 +47,10 @@ class TerminalReporter:
                 location_parts.append(str(issue.line))
         location = ":".join(location_parts)
 
-        # Format: [X] path:line [test_name] message
+        # Format: [X] <analyzer> path:line [test_name] message
         self._tw.write(f"  [{symbol}] ", **{color: True})
+        if analyzer_name:
+            self._tw.write(f"<{analyzer_name}> ")
         if location:
             self._tw.write(f"{location} ")
         if issue.test_name:
@@ -60,10 +62,11 @@ class TerminalReporter:
 
     def write_results(self, results: list[AnalyzerResult]) -> None:
         """Write all analyzer results."""
-        # Group issues by severity
-        all_issues: list[Issue] = []
+        # Collect issues with analyzer attribution
+        all_issues: list[tuple[str, Issue]] = []
         for result in results:
-            all_issues.extend(result.issues)
+            for issue in result.issues:
+                all_issues.append((result.analyzer_name, issue))
 
         if not all_issues:
             self._tw.line("  No quality issues found.", green=True)
@@ -71,16 +74,16 @@ class TerminalReporter:
 
         # Sort by severity (errors first) then by file/line
         all_issues.sort(
-            key=lambda i: (
-                i.severity,
-                str(i.file_path) if i.file_path else "",
-                i.line or 0,
+            key=lambda pair: (
+                pair[1].severity,
+                str(pair[1].file_path) if pair[1].file_path else "",
+                pair[1].line or 0,
             ),
             reverse=True,
         )
 
-        for issue in all_issues:
-            self.write_issue(issue)
+        for analyzer_name, issue in all_issues:
+            self.write_issue(issue, analyzer_name=analyzer_name)
 
     def write_summary(self, results: list[AnalyzerResult], total_tests: int) -> None:
         """Write summary statistics."""
@@ -128,6 +131,28 @@ class TerminalReporter:
         if score >= 60:
             return "D"
         return "F"
+
+    def write_performance_stats(self, stats: dict[str, float]) -> None:
+        """Write aggregate performance statistics."""
+        if not stats:
+            return
+
+        self._tw.sep("-", "Performance")
+        self._tw.line(f"  Tests timed: {int(stats['count'])}")
+        self._tw.line(f"  Total: {stats['total_ms']:.0f}ms")
+        self._tw.line(
+            f"  Mean: {stats['avg_ms']:.0f}ms | "
+            f"Median: {stats['median_ms']:.0f}ms | "
+            f"P95: {stats['p95_ms']:.0f}ms"
+        )
+        self._tw.line(f"  Min: {stats['min_ms']:.0f}ms | Max: {stats['max_ms']:.0f}ms")
+
+        slow = int(stats.get("slow_count", 0))
+        very_slow = int(stats.get("very_slow_count", 0))
+        if very_slow > 0:
+            self._tw.line(f"  Slow: {slow} | Very slow: {very_slow}", yellow=True)
+        elif slow > 0:
+            self._tw.line(f"  Slow: {slow}", yellow=True)
 
     def write_footer(self) -> None:
         """Write the closing separator."""

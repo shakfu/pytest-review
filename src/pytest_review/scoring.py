@@ -75,7 +75,6 @@ class ScoringEngine:
         "assertions": "assertions",
         "naming": "clarity",
         "isolation": "isolation",
-        "isolation_runtime": "isolation",
         "complexity": "simplicity",
         "patterns": "simplicity",
         "performance": "performance",
@@ -95,19 +94,12 @@ class ScoringEngine:
         "assertions.trivial": 10.0,  # assert True
     }
 
-    def __init__(self) -> None:
-        self._results: list[AnalyzerResult] = []
-        self._total_tests: int = 0
-
     def calculate_score(
         self,
         results: list[AnalyzerResult],
         total_tests: int,
     ) -> ScoreBreakdown:
         """Calculate the overall quality score."""
-        self._results = results
-        self._total_tests = total_tests
-
         breakdown = ScoreBreakdown(total_tests=total_tests)
 
         if total_tests == 0:
@@ -126,7 +118,7 @@ class ScoringEngine:
                     breakdown.info_count += 1
 
         # Calculate category scores
-        category_issues = self._group_by_category()
+        category_issues = self._group_by_category(results)
         for category_name, weight in self.CATEGORY_WEIGHTS.items():
             issues = category_issues.get(category_name, [])
             category_score = self._calculate_category_score(
@@ -150,14 +142,17 @@ class ScoringEngine:
 
         return breakdown
 
-    def _group_by_category(self) -> dict[str, list[tuple[AnalyzerResult, Any]]]:
+    @staticmethod
+    def _group_by_category(
+        results: list[AnalyzerResult],
+    ) -> dict[str, list[tuple[AnalyzerResult, Any]]]:
         """Group results by category."""
         categories: dict[str, list[tuple[AnalyzerResult, Any]]] = {
-            name: [] for name in self.CATEGORY_WEIGHTS
+            name: [] for name in ScoringEngine.CATEGORY_WEIGHTS
         }
 
-        for result in self._results:
-            category = self.ANALYZER_CATEGORIES.get(result.analyzer_name)
+        for result in results:
+            category = ScoringEngine.ANALYZER_CATEGORIES.get(result.analyzer_name)
             if category:
                 for issue in result.issues:
                     categories[category].append((result, issue))

@@ -135,6 +135,135 @@ def test_one_assertion():
         insufficient_issues = [i for i in result.issues if i.rule == "assertions.insufficient"]
         assert len(insufficient_issues) == 1
 
+    def test_detects_isinstance_assertion(self) -> None:
+        source = """
+def test_isinstance():
+    result = get_result()
+    assert isinstance(result, dict)
+"""
+        config = ReviewConfig()
+        analyzer = AssertionsAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_isinstance")
+
+        result = analyzer.analyze(test_info)
+
+        low_value = [i for i in result.issues if i.rule == "assertions.low_value"]
+        assert len(low_value) == 1
+        assert "isinstance" in low_value[0].message
+        assert low_value[0].severity == Severity.INFO
+
+    def test_detects_is_not_none_assertion(self) -> None:
+        source = """
+def test_not_none():
+    result = get_result()
+    assert result is not None
+"""
+        config = ReviewConfig()
+        analyzer = AssertionsAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_not_none")
+
+        result = analyzer.analyze(test_info)
+
+        low_value = [i for i in result.issues if i.rule == "assertions.low_value"]
+        assert len(low_value) == 1
+        assert "is not None" in low_value[0].message
+
+    def test_no_low_value_for_equality_check(self) -> None:
+        source = """
+def test_equality():
+    result = get_result()
+    assert result == 42
+"""
+        config = ReviewConfig()
+        analyzer = AssertionsAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_equality")
+
+        result = analyzer.analyze(test_info)
+
+        low_value = [i for i in result.issues if i.rule == "assertions.low_value"]
+        assert len(low_value) == 0
+
+    def test_detects_raises_without_match(self) -> None:
+        source = """
+def test_raises_no_match():
+    import pytest
+    with pytest.raises(ValueError):
+        do_something()
+"""
+        config = ReviewConfig()
+        analyzer = AssertionsAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_raises_no_match")
+
+        result = analyzer.analyze(test_info)
+
+        match_issues = [i for i in result.issues if i.rule == "assertions.raises_without_match"]
+        assert len(match_issues) == 1
+        assert "ValueError" in match_issues[0].message
+        assert match_issues[0].severity == Severity.INFO
+
+    def test_no_raises_issue_with_match(self) -> None:
+        source = """
+def test_raises_with_match():
+    import pytest
+    with pytest.raises(ValueError, match="invalid"):
+        do_something()
+"""
+        config = ReviewConfig()
+        analyzer = AssertionsAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_raises_with_match")
+
+        result = analyzer.analyze(test_info)
+
+        match_issues = [i for i in result.issues if i.rule == "assertions.raises_without_match"]
+        assert len(match_issues) == 0
+
+    def test_detects_yoda_condition(self) -> None:
+        source = """
+def test_yoda():
+    x = 42
+    assert 42 == x
+"""
+        config = ReviewConfig()
+        analyzer = AssertionsAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_yoda")
+
+        result = analyzer.analyze(test_info)
+
+        yoda_issues = [i for i in result.issues if i.rule == "assertions.yoda_condition"]
+        assert len(yoda_issues) == 1
+        assert "42" in yoda_issues[0].message
+        assert yoda_issues[0].severity == Severity.INFO
+
+    def test_no_yoda_for_normal_order(self) -> None:
+        source = """
+def test_normal():
+    x = 42
+    assert x == 42
+"""
+        config = ReviewConfig()
+        analyzer = AssertionsAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_normal")
+
+        result = analyzer.analyze(test_info)
+
+        yoda_issues = [i for i in result.issues if i.rule == "assertions.yoda_condition"]
+        assert len(yoda_issues) == 0
+
+    def test_no_yoda_for_none_comparison(self) -> None:
+        source = """
+def test_none_check():
+    x = get_value()
+    assert None == x
+"""
+        config = ReviewConfig()
+        analyzer = AssertionsAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_none_check")
+
+        result = analyzer.analyze(test_info)
+
+        yoda_issues = [i for i in result.issues if i.rule == "assertions.yoda_condition"]
+        assert len(yoda_issues) == 0
+
     def test_stores_metadata(self) -> None:
         source = """
 def test_with_assertions():

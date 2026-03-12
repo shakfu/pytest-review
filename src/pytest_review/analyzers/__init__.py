@@ -9,6 +9,7 @@ from pytest_review.analyzers.base import (
     Severity,
     StaticAnalyzer,
     TestItemInfo,
+    parse_suppressed_rules,
 )
 from pytest_review.analyzers.complexity import ComplexityAnalyzer
 from pytest_review.analyzers.isolation import IsolationStaticAnalyzer
@@ -32,4 +33,5 @@ __all__ = [
     "SmellsAnalyzer",
     "StaticAnalyzer",
     "TestItemInfo",
+    "parse_suppressed_rules",
 ]

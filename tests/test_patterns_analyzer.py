@@ -210,6 +210,188 @@ def test_clean():
         critical_issues = [i for i in result.issues if i.rule in critical_rules]
         assert len(critical_issues) == 0
 
+    def test_detects_subprocess_run_without_check(self) -> None:
+        source = """
+def test_subprocess_no_check():
+    import subprocess
+    subprocess.run(["ls", "-la"])
+    assert True
+"""
+        config = ReviewConfig()
+        analyzer = PatternsAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_subprocess_no_check")
+
+        result = analyzer.analyze(test_info)
+
+        issues = [i for i in result.issues if i.rule == "patterns.subprocess_no_check"]
+        assert len(issues) == 1
+        assert issues[0].severity == Severity.WARNING
+
+    def test_allows_subprocess_run_with_check(self) -> None:
+        source = """
+def test_subprocess_with_check():
+    import subprocess
+    subprocess.run(["ls"], check=True)
+    assert True
+"""
+        config = ReviewConfig()
+        analyzer = PatternsAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_subprocess_with_check")
+
+        result = analyzer.analyze(test_info)
+
+        issues = [i for i in result.issues if i.rule == "patterns.subprocess_no_check"]
+        assert len(issues) == 0
+
+    def test_detects_broad_pytest_raises(self) -> None:
+        source = """
+def test_broad_raises():
+    with pytest.raises(Exception):
+        do_something()
+"""
+        config = ReviewConfig()
+        analyzer = PatternsAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_broad_raises")
+
+        result = analyzer.analyze(test_info)
+
+        issues = [i for i in result.issues if i.rule == "patterns.broad_raises"]
+        assert len(issues) == 1
+        assert issues[0].severity == Severity.WARNING
+
+    def test_allows_specific_pytest_raises(self) -> None:
+        source = """
+def test_specific_raises():
+    with pytest.raises(ValueError):
+        do_something()
+"""
+        config = ReviewConfig()
+        analyzer = PatternsAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_specific_raises")
+
+        result = analyzer.analyze(test_info)
+
+        issues = [i for i in result.issues if i.rule == "patterns.broad_raises"]
+        assert len(issues) == 0
+
+    def test_detects_mutable_default_list(self) -> None:
+        source = """
+def test_mutable_default():
+    def helper(items=[]):
+        items.append(1)
+    helper()
+    assert True
+"""
+        config = ReviewConfig()
+        analyzer = PatternsAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_mutable_default")
+
+        result = analyzer.analyze(test_info)
+
+        issues = [i for i in result.issues if i.rule == "patterns.mutable_default"]
+        assert len(issues) == 1
+        assert issues[0].severity == Severity.WARNING
+
+    def test_detects_mutable_default_dict(self) -> None:
+        source = """
+def test_mutable_dict():
+    def helper(config={}):
+        pass
+    helper()
+    assert True
+"""
+        config = ReviewConfig()
+        analyzer = PatternsAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_mutable_dict")
+
+        result = analyzer.analyze(test_info)
+
+        issues = [i for i in result.issues if i.rule == "patterns.mutable_default"]
+        assert len(issues) == 1
+
+    def test_no_mutable_default_with_none(self) -> None:
+        source = """
+def test_safe_default():
+    def helper(items=None):
+        items = items or []
+    helper()
+    assert True
+"""
+        config = ReviewConfig()
+        analyzer = PatternsAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_safe_default")
+
+        result = analyzer.analyze(test_info)
+
+        issues = [i for i in result.issues if i.rule == "patterns.mutable_default"]
+        assert len(issues) == 0
+
+    def test_detects_requests_get(self) -> None:
+        source = """
+def test_network_call():
+    import requests
+    response = requests.get("https://example.com")
+    assert response.status_code == 200
+"""
+        config = ReviewConfig()
+        analyzer = PatternsAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_network_call")
+
+        result = analyzer.analyze(test_info)
+
+        issues = [i for i in result.issues if i.rule == "patterns.slow_call"]
+        assert len(issues) == 1
+        assert "requests.get" in issues[0].message
+        assert issues[0].severity == Severity.INFO
+
+    def test_detects_httpx_post(self) -> None:
+        source = """
+def test_httpx_call():
+    import httpx
+    response = httpx.post("https://example.com", json={})
+    assert response.status_code == 200
+"""
+        config = ReviewConfig()
+        analyzer = PatternsAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_httpx_call")
+
+        result = analyzer.analyze(test_info)
+
+        issues = [i for i in result.issues if i.rule == "patterns.slow_call"]
+        assert len(issues) == 1
+        assert "httpx.post" in issues[0].message
+
+    def test_detects_cursor_execute(self) -> None:
+        source = """
+def test_db_call():
+    cursor.execute("SELECT 1")
+    assert True
+"""
+        config = ReviewConfig()
+        analyzer = PatternsAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_db_call")
+
+        result = analyzer.analyze(test_info)
+
+        issues = [i for i in result.issues if i.rule == "patterns.slow_call"]
+        assert len(issues) == 1
+        assert "cursor.execute" in issues[0].message
+
+    def test_no_slow_call_for_local_method(self) -> None:
+        source = """
+def test_local_call():
+    result = compute()
+    assert result == 42
+"""
+        config = ReviewConfig()
+        analyzer = PatternsAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_local_call")
+
+        result = analyzer.analyze(test_info)
+
+        issues = [i for i in result.issues if i.rule == "patterns.slow_call"]
+        assert len(issues) == 0
+
     def test_stores_metadata(self) -> None:
         source = """
 def test_metadata():

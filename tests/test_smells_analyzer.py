@@ -197,6 +197,100 @@ def test_example():
         rules = [issue.rule for issue in result.issues]
         assert "smells.eager_test" not in rules
 
+    def test_detects_conditional_logic(self) -> None:
+        source = """
+def test_example():
+    result = compute()
+    if result > 0:
+        assert result == 42
+    else:
+        assert result == 0
+"""
+        analyzer = SmellsAnalyzer(ReviewConfig())
+        test_info = make_test_info(source)
+        result = analyzer.analyze(test_info)
+
+        rules = [issue.rule for issue in result.issues]
+        assert "smells.conditional_test" in rules
+
+    def test_no_conditional_without_if(self) -> None:
+        source = """
+def test_example():
+    result = compute()
+    assert result == 42
+"""
+        analyzer = SmellsAnalyzer(ReviewConfig())
+        test_info = make_test_info(source)
+        result = analyzer.analyze(test_info)
+
+        rules = [issue.rule for issue in result.issues]
+        assert "smells.conditional_test" not in rules
+
+    def test_detects_too_many_fixtures(self) -> None:
+        source = """
+def test_example(db, cache, api_client, logger, config, mailer):
+    assert db is not None
+"""
+        analyzer = SmellsAnalyzer(ReviewConfig())
+        test_info = make_test_info(source)
+        result = analyzer.analyze(test_info)
+
+        rules = [issue.rule for issue in result.issues]
+        assert "smells.too_many_fixtures" in rules
+
+    def test_no_fixture_overuse_with_few_params(self) -> None:
+        source = """
+def test_example(db, cache):
+    assert db is not None
+"""
+        analyzer = SmellsAnalyzer(ReviewConfig())
+        test_info = make_test_info(source)
+        result = analyzer.analyze(test_info)
+
+        rules = [issue.rule for issue in result.issues]
+        assert "smells.too_many_fixtures" not in rules
+
+    def test_fixture_overuse_excludes_self(self) -> None:
+        source = """
+def test_example(self, db, cache, api, logger, config):
+    assert db is not None
+"""
+        analyzer = SmellsAnalyzer(ReviewConfig())
+        test_info = make_test_info(source)
+        result = analyzer.analyze(test_info)
+
+        rules = [issue.rule for issue in result.issues]
+        assert "smells.too_many_fixtures" not in rules
+
+    def test_detects_try_except_in_test(self) -> None:
+        source = """
+def test_example():
+    try:
+        result = risky_operation()
+    except ValueError:
+        result = None
+    assert result is not None
+"""
+        analyzer = SmellsAnalyzer(ReviewConfig())
+        test_info = make_test_info(source)
+        result = analyzer.analyze(test_info)
+
+        rules = [issue.rule for issue in result.issues]
+        assert "smells.try_except_in_test" in rules
+
+    def test_no_try_except_without_try(self) -> None:
+        source = """
+def test_example():
+    result = safe_operation()
+    assert result == 42
+"""
+        analyzer = SmellsAnalyzer(ReviewConfig())
+        test_info = make_test_info(source)
+        result = analyzer.analyze(test_info)
+
+        rules = [issue.rule for issue in result.issues]
+        assert "smells.try_except_in_test" not in rules
+
     def test_stores_metadata(self) -> None:
         """Analyzer stores metadata in result."""
         source = """

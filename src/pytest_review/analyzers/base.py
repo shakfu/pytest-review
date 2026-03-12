@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
@@ -11,6 +12,9 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from pytest_review.config import ReviewConfig
+
+# Pattern for inline suppression comments: # review: ignore[rule1,rule2]
+_IGNORE_PATTERN = re.compile(r"#\s*review:\s*ignore\[([^\]]+)\]")
 
 
 class Severity(Enum):
@@ -79,6 +83,20 @@ class AnalyzerResult:
         self.issues.append(issue)
 
 
+def parse_suppressed_rules(source: str) -> set[str]:
+    """Parse ``# review: ignore[rule1,rule2]`` comments from source code.
+
+    Returns the set of rule names that should be suppressed for this test.
+    """
+    suppressed: set[str] = set()
+    for match in _IGNORE_PATTERN.finditer(source):
+        for rule in match.group(1).split(","):
+            rule = rule.strip()
+            if rule:
+                suppressed.add(rule)
+    return suppressed
+
+
 @dataclass
 class TestItemInfo:
     """Information about a test function for analysis."""
@@ -91,6 +109,7 @@ class TestItemInfo:
     node: ast.FunctionDef | ast.AsyncFunctionDef
     source: str
     class_name: str | None = None
+    suppressed_rules: set[str] = field(default_factory=set)
 
     @property
     def full_name(self) -> str:
@@ -133,9 +152,13 @@ class StaticAnalyzer(Analyzer):
     """Base class for static (AST-based) analyzers."""
 
     def analyze(self, test: TestItemInfo) -> AnalyzerResult:
-        """Analyze a test using AST."""
+        """Analyze a test using AST, then filter inline-suppressed rules."""
         result = AnalyzerResult(analyzer_name=self.name)
         self._analyze_ast(test, result)
+        if test.suppressed_rules:
+            result.issues = [
+                issue for issue in result.issues if issue.rule not in test.suppressed_rules
+            ]
         return result
 
     @abstractmethod

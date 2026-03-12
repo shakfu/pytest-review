@@ -110,6 +110,52 @@ class TestNamingAnalyzer:
         docstring_issues = [i for i in result.issues if i.rule == "naming.missing_docstring"]
         assert len(docstring_issues) == 1
 
+    def test_detects_redundant_prefix(self) -> None:
+        source = "def test_test_connection(): pass"
+        config = ReviewConfig()
+        analyzer = NamingAnalyzer(config)
+        test_info = make_test_info(source, "test_test_connection")
+
+        result = analyzer.analyze(test_info)
+
+        redundant = [i for i in result.issues if i.rule == "naming.redundant_prefix"]
+        assert len(redundant) == 1
+        assert redundant[0].severity == Severity.INFO
+
+    def test_no_redundant_prefix_for_normal_name(self) -> None:
+        source = "def test_creates_connection(): pass"
+        config = ReviewConfig()
+        analyzer = NamingAnalyzer(config)
+        test_info = make_test_info(source, "test_creates_connection")
+
+        result = analyzer.analyze(test_info)
+
+        redundant = [i for i in result.issues if i.rule == "naming.redundant_prefix"]
+        assert len(redundant) == 0
+
+    def test_detects_missing_verb(self) -> None:
+        source = "def test_user_profile(): pass"
+        config = ReviewConfig()
+        analyzer = NamingAnalyzer(config)
+        test_info = make_test_info(source, "test_user_profile")
+
+        result = analyzer.analyze(test_info)
+
+        verb_issues = [i for i in result.issues if i.rule == "naming.missing_verb"]
+        assert len(verb_issues) == 1
+        assert verb_issues[0].severity == Severity.INFO
+
+    def test_no_missing_verb_when_starts_with_verb(self) -> None:
+        source = "def test_returns_correct_value(): pass"
+        config = ReviewConfig()
+        analyzer = NamingAnalyzer(config)
+        test_info = make_test_info(source, "test_returns_correct_value")
+
+        result = analyzer.analyze(test_info)
+
+        verb_issues = [i for i in result.issues if i.rule == "naming.missing_verb"]
+        assert len(verb_issues) == 0
+
     def test_accepts_test_with_docstring(self) -> None:
         source = '''
 def test_with_docs():

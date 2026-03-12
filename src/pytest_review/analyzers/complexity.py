@@ -22,6 +22,7 @@ class ComplexityVisitor(ast.NodeVisitor):
 
     def __init__(self) -> None:
         self.statement_count = 0
+        self.assertion_count = 0
         self.max_depth = 0
         self.cyclomatic_complexity = 1  # Base complexity
         self._current_depth = 0
@@ -53,11 +54,15 @@ class ComplexityVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Expr(self, node: ast.Expr) -> None:
+        # Skip docstrings (string constant expressions)
+        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            return
         self._count_statement()
         self.generic_visit(node)
 
     def visit_Assert(self, node: ast.Assert) -> None:
         self._count_statement()
+        self.assertion_count += 1
         self.generic_visit(node)
 
     def visit_Return(self, node: ast.Return) -> None:
@@ -92,13 +97,16 @@ class ComplexityVisitor(ast.NodeVisitor):
     def visit_If(self, node: ast.If) -> None:
         self._count_statement()
         self.cyclomatic_complexity += 1
-        # Count elif branches
-        for child in node.orelse:
-            if isinstance(child, ast.If):
-                self.cyclomatic_complexity += 1
+        # Visit the condition (may contain BoolOp, IfExp, etc.)
+        self.visit(node.test)
         self._enter_scope()
-        self.generic_visit(node)
+        for child in node.body:
+            self.visit(child)
         self._exit_scope()
+        # Visit orelse without re-dispatching to visit_If for chained elif
+        # (the chained If node will be visited directly, incrementing complexity once)
+        for child in node.orelse:
+            self.visit(child)
 
     def visit_For(self, node: ast.For) -> None:
         self._count_statement()
@@ -178,12 +186,10 @@ class ComplexityAnalyzer(StaticAnalyzer):
 
     def __init__(self, config: ReviewConfig) -> None:
         super().__init__(config)
-        max_stmt_opt = self.get_option("max_statements", 20)
-        max_depth_opt = self.get_option("max_depth", 3)
-        max_cplx_opt = self.get_option("max_complexity", 5)
-        self._max_statements = int(str(max_stmt_opt)) if max_stmt_opt is not None else 20
-        self._max_depth = int(str(max_depth_opt)) if max_depth_opt is not None else 3
-        self._max_complexity = int(str(max_cplx_opt)) if max_cplx_opt is not None else 5
+        typed = config.get_complexity_config()
+        self._max_statements = typed.max_statements
+        self._max_depth = typed.max_depth
+        self._max_complexity = typed.max_complexity
 
     def _analyze_ast(self, test: TestItemInfo, result: AnalyzerResult) -> None:
         visitor = ComplexityVisitor()
@@ -234,7 +240,70 @@ class ComplexityAnalyzer(StaticAnalyzer):
                 )
             )
 
+        # Check assertion-to-logic ratio
+        if (
+            visitor.statement_count >= 10
+            and visitor.assertion_count > 0
+            and visitor.assertion_count / visitor.statement_count < 0.1
+        ):
+            result.add_issue(
+                Issue(
+                    rule="complexity.low_assertion_ratio",
+                    message=(
+                        f"Low assertion-to-logic ratio: "
+                        f"{visitor.assertion_count}/{visitor.statement_count} statements "
+                        f"are assertions"
+                    ),
+                    severity=Severity.INFO,
+                    file_path=test.file_path,
+                    line=test.line,
+                    test_name=test.name,
+                    suggestion="Test has too much setup/logic relative to assertions",
+                )
+            )
+
+        # Check for excessive @pytest.mark.parametrize combinations
+        self._check_excessive_parametrize(test, result)
+
         # Store metadata
         result.metadata["statement_count"] = visitor.statement_count
+        result.metadata["assertion_count"] = visitor.assertion_count
         result.metadata["max_depth"] = visitor.max_depth
         result.metadata["cyclomatic_complexity"] = visitor.cyclomatic_complexity
+
+    @staticmethod
+    def _check_excessive_parametrize(test: TestItemInfo, result: AnalyzerResult) -> None:
+        """Check for @pytest.mark.parametrize with too many cases."""
+        for decorator in test.node.decorator_list:
+            call = decorator if isinstance(decorator, ast.Call) else None
+            if call is None:
+                continue
+            # Match pytest.mark.parametrize(...)
+            func = call.func
+            is_parametrize = False
+            if isinstance(func, ast.Attribute) and func.attr == "parametrize":
+                is_parametrize = True
+            if not is_parametrize:
+                continue
+            # Second positional arg is the parameter list
+            if len(call.args) < 2:
+                continue
+            params_arg = call.args[1]
+            case_count = 0
+            if isinstance(params_arg, (ast.List, ast.Tuple)):
+                case_count = len(params_arg.elts)
+            if case_count > 20:
+                result.add_issue(
+                    Issue(
+                        rule="complexity.excessive_parametrize",
+                        message=(f"@pytest.mark.parametrize has {case_count} cases"),
+                        severity=Severity.INFO,
+                        file_path=test.file_path,
+                        line=decorator.lineno,
+                        test_name=test.name,
+                        suggestion=(
+                            "Consider splitting into focused test groups "
+                            "or loading test data from a file"
+                        ),
+                    )
+                )

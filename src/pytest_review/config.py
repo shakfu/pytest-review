@@ -14,6 +14,66 @@ else:
 
 
 @dataclass
+class AssertionsConfig:
+    """Typed configuration for the assertions analyzer."""
+
+    enabled: bool = True
+    min_assertions: int = 1
+
+
+@dataclass
+class NamingConfig:
+    """Typed configuration for the naming analyzer."""
+
+    enabled: bool = True
+    min_length: int = 10
+    require_docstring: bool = False
+
+
+@dataclass
+class ComplexityConfig:
+    """Typed configuration for the complexity analyzer."""
+
+    enabled: bool = True
+    max_statements: int = 20
+    max_depth: int = 3
+    max_complexity: int = 5
+
+
+@dataclass
+class PatternsConfig:
+    """Typed configuration for the patterns analyzer."""
+
+    enabled: bool = True
+
+
+@dataclass
+class IsolationConfig:
+    """Typed configuration for the isolation analyzer."""
+
+    enabled: bool = True
+
+
+@dataclass
+class PerformanceConfig:
+    """Typed configuration for the performance analyzer."""
+
+    enabled: bool = True
+    slow_threshold_ms: float = 500.0
+    very_slow_threshold_ms: float = 2000.0
+
+
+@dataclass
+class SmellsConfig:
+    """Typed configuration for the smells analyzer."""
+
+    enabled: bool = True
+    max_assertions_without_message: int = 1
+    check_magic_numbers: bool = True
+    check_eager_test: bool = True
+
+
+@dataclass
 class AnalyzerConfig:
     """Configuration for an individual analyzer."""
 
@@ -55,8 +115,9 @@ class ReviewConfig:
 
         for name, analyzer_data in analyzers_data.items():
             if isinstance(analyzer_data, dict):
-                enabled = analyzer_data.pop("enabled", True)
-                analyzers[name] = AnalyzerConfig(enabled=enabled, options=analyzer_data)
+                enabled = analyzer_data.get("enabled", True)
+                options = {k: v for k, v in analyzer_data.items() if k != "enabled"}
+                analyzers[name] = AnalyzerConfig(enabled=enabled, options=options)
             else:
                 analyzers[name] = AnalyzerConfig(enabled=bool(analyzer_data))
 
@@ -84,3 +145,61 @@ class ReviewConfig:
         """Get a specific option for an analyzer."""
         config = self.get_analyzer_config(analyzer)
         return config.options.get(option, default)
+
+    def get_assertions_config(self) -> AssertionsConfig:
+        """Get typed configuration for the assertions analyzer."""
+        raw = self.get_analyzer_config("assertions")
+        return AssertionsConfig(
+            enabled=raw.enabled,
+            min_assertions=int(raw.options.get("min_assertions", 1)),
+        )
+
+    def get_naming_config(self) -> NamingConfig:
+        """Get typed configuration for the naming analyzer."""
+        raw = self.get_analyzer_config("naming")
+        return NamingConfig(
+            enabled=raw.enabled,
+            min_length=int(raw.options.get("min_length", 10)),
+            require_docstring=bool(raw.options.get("require_docstring", False)),
+        )
+
+    def get_complexity_config(self) -> ComplexityConfig:
+        """Get typed configuration for the complexity analyzer."""
+        raw = self.get_analyzer_config("complexity")
+        return ComplexityConfig(
+            enabled=raw.enabled,
+            max_statements=int(raw.options.get("max_statements", 20)),
+            max_depth=int(raw.options.get("max_depth", 3)),
+            max_complexity=int(raw.options.get("max_complexity", 5)),
+        )
+
+    def get_patterns_config(self) -> PatternsConfig:
+        """Get typed configuration for the patterns analyzer."""
+        raw = self.get_analyzer_config("patterns")
+        return PatternsConfig(enabled=raw.enabled)
+
+    def get_isolation_config(self) -> IsolationConfig:
+        """Get typed configuration for the isolation analyzer."""
+        raw = self.get_analyzer_config("isolation")
+        return IsolationConfig(enabled=raw.enabled)
+
+    def get_performance_config(self) -> PerformanceConfig:
+        """Get typed configuration for the performance analyzer."""
+        raw = self.get_analyzer_config("performance")
+        return PerformanceConfig(
+            enabled=raw.enabled,
+            slow_threshold_ms=float(raw.options.get("slow_threshold_ms", 500.0)),
+            very_slow_threshold_ms=float(raw.options.get("very_slow_threshold_ms", 2000.0)),
+        )
+
+    def get_smells_config(self) -> SmellsConfig:
+        """Get typed configuration for the smells analyzer."""
+        raw = self.get_analyzer_config("smells")
+        return SmellsConfig(
+            enabled=raw.enabled,
+            max_assertions_without_message=int(
+                raw.options.get("max_assertions_without_message", 1)
+            ),
+            check_magic_numbers=bool(raw.options.get("check_magic_numbers", True)),
+            check_eager_test=bool(raw.options.get("check_eager_test", True)),
+        )

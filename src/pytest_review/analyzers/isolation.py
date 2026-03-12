@@ -3,20 +3,110 @@
 from __future__ import annotations
 
 import ast
-import sys
-from typing import TYPE_CHECKING, Any
 
 from pytest_review.analyzers.base import (
     AnalyzerResult,
-    DynamicAnalyzer,
     Issue,
     Severity,
     StaticAnalyzer,
     TestItemInfo,
 )
 
-if TYPE_CHECKING:
-    from pytest_review.config import ReviewConfig
+
+def _collect_local_names(func_node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    """Collect names that are locally defined within a function.
+
+    Includes parameters, assignment targets, import names, for-loop targets,
+    with-as targets, and exception handler names.
+    """
+    locals_: set[str] = set()
+
+    # Parameters (positional, keyword, *args, **kwargs)
+    for arg in func_node.args.args + func_node.args.posonlyargs + func_node.args.kwonlyargs:
+        locals_.add(arg.arg)
+    if func_node.args.vararg:
+        locals_.add(func_node.args.vararg.arg)
+    if func_node.args.kwarg:
+        locals_.add(func_node.args.kwarg.arg)
+
+    # Walk the function body for other local bindings
+    for node in ast.walk(func_node):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    locals_.add(target.id)
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)) and isinstance(node.target, ast.Name):
+            locals_.add(node.target.id)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                locals_.add(alias.asname if alias.asname else alias.name)
+        elif isinstance(node, ast.For) and isinstance(node.target, ast.Name):
+            locals_.add(node.target.id)
+        elif isinstance(node, ast.withitem) and isinstance(node.optional_vars, ast.Name):
+            locals_.add(node.optional_vars.id)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            locals_.add(node.name)
+        elif isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            for gen in node.generators:
+                if isinstance(gen.target, ast.Name):
+                    locals_.add(gen.target.id)
+        elif isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
+            locals_.add(node.target.id)
+
+    return locals_
+
+
+class MockPatchVisitor(ast.NodeVisitor):
+    """Detects mock.patch / patch.object calls not used as context managers."""
+
+    def __init__(self) -> None:
+        self.bare_patches: list[tuple[int, str]] = []
+        self._with_context_calls: set[int] = set()
+
+    def visit_With(self, node: ast.With) -> None:
+        for item in node.items:
+            if isinstance(item.context_expr, ast.Call):
+                self._with_context_calls.add(id(item.context_expr))
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if id(node) in self._with_context_calls:
+            self.generic_visit(node)
+            return
+        if self._is_patch_call(node):
+            self.bare_patches.append((node.lineno, self._patch_name(node)))
+        self.generic_visit(node)
+
+    @staticmethod
+    def _is_patch_call(node: ast.Call) -> bool:
+        func = node.func
+        # mock.patch(...)
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr == "patch"
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "mock"
+        ):
+            return True
+        # patch.object(...)
+        if isinstance(func, ast.Attribute) and func.attr == "object":
+            if isinstance(func.value, ast.Attribute) and func.value.attr == "patch":
+                return True
+            if isinstance(func.value, ast.Name) and func.value.id == "patch":
+                return True
+        # Direct patch(...) call
+        return isinstance(func, ast.Name) and func.id == "patch"
+
+    @staticmethod
+    def _patch_name(node: ast.Call) -> str:
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            if func.attr == "object":
+                return "patch.object()"
+            return f"{func.attr}()"
+        if isinstance(func, ast.Name):
+            return f"{func.id}()"
+        return "patch()"
 
 
 class GlobalModificationVisitor(ast.NodeVisitor):
@@ -40,11 +130,16 @@ class GlobalModificationVisitor(ast.NodeVisitor):
         "popitem",
     }
 
-    def __init__(self) -> None:
+    def __init__(self, local_names: set[str]) -> None:
         self.global_writes: list[tuple[int, str]] = []  # (line, name)
         self.global_declarations: list[str] = []
         self.class_attr_modifications: list[tuple[int, str]] = []
-        self._in_function = False
+        self.env_mutations: list[tuple[int, str]] = []
+        self._local_names = local_names
+
+    def _is_external(self, name: str) -> bool:
+        """Check if a name refers to something outside the function scope."""
+        return name not in self._local_names
 
     def visit_Global(self, node: ast.Global) -> None:
         """Detect 'global' keyword usage."""
@@ -58,41 +153,52 @@ class GlobalModificationVisitor(ast.NodeVisitor):
         # Check if this is a write context (assignment target)
         if isinstance(node.ctx, ast.Store) and isinstance(node.value, ast.Name):
             name = node.value.id
-            # Common class reference patterns
-            if name in ("cls", "self.__class__") or name[0].isupper():
+            if self._is_external(name):
                 self.class_attr_modifications.append((node.lineno, f"{name}.{node.attr}"))
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
-        """Detect mutating method calls on class attributes."""
-        # Check for ClassName.attr.mutating_method() pattern
+        """Detect mutating method calls on class attributes and os.environ."""
         if isinstance(node.func, ast.Attribute):
             method_name = node.func.attr
+            # Check for os.environ.update/pop/setdefault/clear/...
+            if method_name in self.MUTATING_METHODS and self._is_os_environ(node.func.value):
+                self.env_mutations.append((node.lineno, f"os.environ.{method_name}()"))
+                self.generic_visit(node)
+                return
+            # Check for Name.attr.mutating_method() pattern
             if method_name in self.MUTATING_METHODS and isinstance(node.func.value, ast.Attribute):
                 inner = node.func.value
                 if isinstance(inner.value, ast.Name):
                     name = inner.value.id
-                    # Common class reference patterns
-                    if name in ("cls", "self.__class__") or name[0].isupper():
+                    if self._is_external(name):
                         self.class_attr_modifications.append(
                             (node.lineno, f"{name}.{inner.attr}.{method_name}()")
                         )
         self.generic_visit(node)
 
+    def _is_os_environ(self, node: ast.AST) -> bool:
+        """Check if node is os.environ."""
+        return (
+            isinstance(node, ast.Attribute)
+            and node.attr == "environ"
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "os"
+        )
+
     def visit_Subscript(self, node: ast.Subscript) -> None:
-        """Detect modifications to module-level dicts/lists."""
-        if (
-            isinstance(node.ctx, ast.Store)
-            and isinstance(node.value, ast.Attribute)
-            and isinstance(node.value.value, ast.Name)
-        ):
-            module_name = node.value.value.id
-            attr_name = node.value.attr
-            # Check if it looks like a module reference
-            if module_name in sys.modules or module_name[0].islower():
-                self.class_attr_modifications.append(
-                    (node.lineno, f"{module_name}.{attr_name}[...]")
-                )
+        """Detect modifications to module-level dicts/lists and os.environ."""
+        if isinstance(node.ctx, ast.Store):
+            # Check for os.environ["KEY"] = ...
+            if self._is_os_environ(node.value):
+                self.env_mutations.append((node.lineno, "os.environ[...] = ..."))
+                self.generic_visit(node)
+                return
+            if isinstance(node.value, ast.Attribute) and isinstance(node.value.value, ast.Name):
+                name = node.value.value.id
+                attr_name = node.value.attr
+                if self._is_external(name):
+                    self.class_attr_modifications.append((node.lineno, f"{name}.{attr_name}[...]"))
         self.generic_visit(node)
 
 
@@ -103,7 +209,8 @@ class IsolationStaticAnalyzer(StaticAnalyzer):
     description = "Detects potential test isolation issues"
 
     def _analyze_ast(self, test: TestItemInfo, result: AnalyzerResult) -> None:
-        visitor = GlobalModificationVisitor()
+        local_names = _collect_local_names(test.node)
+        visitor = GlobalModificationVisitor(local_names)
         visitor.visit(test.node)
 
         # Report global keyword usage
@@ -134,117 +241,37 @@ class IsolationStaticAnalyzer(StaticAnalyzer):
                 )
             )
 
+        # Report os.environ mutations
+        for line, detail in visitor.env_mutations:
+            result.add_issue(
+                Issue(
+                    rule="isolation.env_mutation",
+                    message=f"Test mutates os.environ: {detail}",
+                    severity=Severity.WARNING,
+                    file_path=test.file_path,
+                    line=line,
+                    test_name=test.name,
+                    suggestion="Use monkeypatch.setenv/delenv to safely modify env vars",
+                )
+            )
+
+        # Check for bare mock.patch calls
+        patch_visitor = MockPatchVisitor()
+        patch_visitor.visit(test.node)
+        for line, detail in patch_visitor.bare_patches:
+            result.add_issue(
+                Issue(
+                    rule="isolation.bare_patch",
+                    message=f"Bare {detail} without context manager may leak state",
+                    severity=Severity.WARNING,
+                    file_path=test.file_path,
+                    line=line,
+                    test_name=test.name,
+                    suggestion="Use 'with patch(...)' or a decorator to ensure cleanup",
+                )
+            )
+
         result.metadata["global_modifications"] = len(visitor.global_writes)
         result.metadata["class_attr_modifications"] = len(visitor.class_attr_modifications)
-
-
-class IsolationDynamicAnalyzer(DynamicAnalyzer):
-    """Dynamic analyzer that tracks actual state modifications during test runs."""
-
-    name = "isolation_runtime"
-    description = "Tracks runtime state modifications"
-
-    def __init__(self, config: ReviewConfig) -> None:
-        super().__init__(config)
-        self._module_snapshots: dict[str, dict[str, Any]] = {}
-        self._test_modifications: dict[str, list[str]] = {}
-        self._current_test: str | None = None
-        self._monitored_modules: set[str] = set()
-
-    def configure_monitoring(self, module_names: list[str]) -> None:
-        """Configure which modules to monitor for state changes."""
-        self._monitored_modules = set(module_names)
-
-    def _snapshot_module(self, module_name: str) -> dict[str, Any]:
-        """Take a snapshot of a module's public attributes."""
-        if module_name not in sys.modules:
-            return {}
-
-        module = sys.modules[module_name]
-        snapshot: dict[str, Any] = {}
-
-        for name in dir(module):
-            if name.startswith("_"):
-                continue
-            try:
-                value = getattr(module, name)
-                # Only track simple types that we can compare
-                if isinstance(value, (int, float, str, bool, list, dict, set, tuple)):
-                    # For mutable types, make a shallow copy
-                    if isinstance(value, list):
-                        snapshot[name] = list(value)
-                    elif isinstance(value, dict):
-                        snapshot[name] = dict(value)
-                    elif isinstance(value, set):
-                        snapshot[name] = set(value)
-                    else:
-                        snapshot[name] = value
-            except Exception:
-                pass
-
-        return snapshot
-
-    def _compare_snapshots(self, before: dict[str, Any], after: dict[str, Any]) -> list[str]:
-        """Compare two snapshots and return list of modified attributes."""
-        modified = []
-
-        # Check for modifications and additions
-        for name, after_value in after.items():
-            if name not in before:
-                modified.append(f"{name} (added)")
-            elif before[name] != after_value:
-                modified.append(f"{name} (modified)")
-
-        # Check for deletions
-        for name in before:
-            if name not in after:
-                modified.append(f"{name} (deleted)")
-
-        return modified
-
-    def on_test_start(self, test_name: str) -> None:
-        """Called when a test starts executing."""
-        self._current_test = test_name
-        self._module_snapshots = {}
-
-        # Take snapshots of monitored modules
-        for module_name in self._monitored_modules:
-            self._module_snapshots[module_name] = self._snapshot_module(module_name)
-
-    def on_test_end(self, test_name: str, passed: bool, duration: float) -> None:
-        """Called when a test finishes executing."""
-        modifications = []
-
-        # Compare snapshots
-        for module_name in self._monitored_modules:
-            before = self._module_snapshots.get(module_name, {})
-            after = self._snapshot_module(module_name)
-            module_mods = self._compare_snapshots(before, after)
-            for mod in module_mods:
-                modifications.append(f"{module_name}.{mod}")
-
-        if modifications:
-            self._test_modifications[test_name] = modifications
-
-        self._current_test = None
-
-    def get_results(self) -> list[AnalyzerResult]:
-        """Get accumulated results after test run."""
-        results = []
-
-        for test_name, modifications in self._test_modifications.items():
-            result = AnalyzerResult(analyzer_name=self.name)
-            for mod in modifications:
-                result.add_issue(
-                    Issue(
-                        rule="isolation.runtime_modification",
-                        message=f"Test modified shared state: {mod}",
-                        severity=Severity.WARNING,
-                        test_name=test_name,
-                        suggestion="Ensure test cleanup restores original state",
-                    )
-                )
-            result.metadata["modifications"] = modifications
-            results.append(result)
-
-        return results
+        result.metadata["env_mutations"] = len(visitor.env_mutations)
+        result.metadata["bare_patches"] = len(patch_visitor.bare_patches)

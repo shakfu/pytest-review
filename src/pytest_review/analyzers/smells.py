@@ -30,12 +30,10 @@ class SmellsAnalyzer(StaticAnalyzer):
 
     def __init__(self, config: ReviewConfig) -> None:
         super().__init__(config)
-        analyzer_config = config.get_analyzer_config(self.name)
-        self._max_assertions_without_message = analyzer_config.options.get(
-            "max_assertions_without_message", 1
-        )
-        self._check_magic_numbers = analyzer_config.options.get("check_magic_numbers", True)
-        self._check_eager_test = analyzer_config.options.get("check_eager_test", True)
+        typed = config.get_smells_config()
+        self._max_assertions_without_message = typed.max_assertions_without_message
+        self._check_magic_numbers = typed.check_magic_numbers
+        self._check_eager_test = typed.check_eager_test
 
     def _analyze_ast(self, test: TestItemInfo, result: AnalyzerResult) -> None:
         """Analyze test for smells."""
@@ -187,6 +185,9 @@ class SmellVisitor(ast.NodeVisitor):
         self._check_assertion_roulette()
         self._check_duplicate_assertions()
         self._check_eager_test()
+        self._check_conditional_logic()
+        self._check_fixture_overuse()
+        self._check_try_except()
 
     def _check_assertion_roulette(self) -> None:
         """Check for multiple assertions without messages."""
@@ -304,5 +305,68 @@ class SmellVisitor(ast.NodeVisitor):
                     line=self._test.line,
                     test_name=self._test.name,
                     suggestion="Consider splitting into focused tests for each behavior",
+                )
+            )
+
+    def _check_conditional_logic(self) -> None:
+        """Check for if/else branches in test body."""
+        node = self._test.node
+        for child in ast.walk(node):
+            if isinstance(child, ast.If):
+                self._result.add_issue(
+                    Issue(
+                        rule="smells.conditional_test",
+                        message="Test contains conditional logic (if/else)",
+                        severity=Severity.WARNING,
+                        file_path=self._test.file_path,
+                        line=child.lineno,
+                        test_name=self._test.name,
+                        suggestion="Split into separate tests or use @pytest.mark.parametrize",
+                    )
+                )
+                return  # Report once per test
+
+    def _check_try_except(self) -> None:
+        """Check for try/except blocks in test body."""
+        node = self._test.node
+        for child in ast.walk(node):
+            if isinstance(child, ast.Try):
+                self._result.add_issue(
+                    Issue(
+                        rule="smells.try_except_in_test",
+                        message="Test contains try/except which may mask failures",
+                        severity=Severity.WARNING,
+                        file_path=self._test.file_path,
+                        line=child.lineno,
+                        test_name=self._test.name,
+                        suggestion="Use pytest.raises() instead of try/except in tests",
+                    )
+                )
+                return  # Report once per test
+
+    def _check_fixture_overuse(self) -> None:
+        """Check for too many parameters (fixtures)."""
+        node = self._test.node
+        args = node.args
+        # Count all parameters except 'self' and 'cls'
+        param_names = [a.arg for a in args.args if a.arg not in ("self", "cls")]
+        param_count = (
+            len(param_names)
+            + len(args.kwonlyargs)
+            + (1 if args.vararg else 0)
+            + (1 if args.kwarg else 0)
+        )
+        if param_count > 5:
+            self._result.add_issue(
+                Issue(
+                    rule="smells.too_many_fixtures",
+                    message=(
+                        f"Test has {param_count} parameters (fixtures); consider composing fixtures"
+                    ),
+                    severity=Severity.INFO,
+                    file_path=self._test.file_path,
+                    line=self._test.line,
+                    test_name=self._test.name,
+                    suggestion="Combine related fixtures into a composite fixture",
                 )
             )

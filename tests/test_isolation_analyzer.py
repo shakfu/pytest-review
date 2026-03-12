@@ -112,7 +112,7 @@ def test_with_globals():
 
     def test_instance_attribute_is_allowed(self) -> None:
         source = """
-def test_instance_attr():
+def test_instance_attr(self):
     self.value = 123
     assert self.value == 123
 """
@@ -123,10 +123,140 @@ def test_instance_attr():
         result = analyzer.analyze(test_info)
 
         # self.attr modifications are fine (instance, not class)
-        # The analyzer doesn't flag 'self' since it's instance-level
+        # 'self' is a parameter so it's in local scope
         class_issues = [i for i in result.issues if i.rule == "isolation.class_attr_modification"]
-        # 'self' starts with lowercase so won't be flagged as class modification
         assert len(class_issues) == 0
+
+    def test_detects_lowercase_external_attr_modification(self) -> None:
+        source = """
+def test_modifies_external():
+    settings.DEBUG = True
+    assert settings.DEBUG
+"""
+        config = ReviewConfig()
+        analyzer = IsolationStaticAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_modifies_external")
+
+        result = analyzer.analyze(test_info)
+
+        class_issues = [i for i in result.issues if i.rule == "isolation.class_attr_modification"]
+        assert len(class_issues) == 1
+        assert "settings.DEBUG" in class_issues[0].message
+
+    def test_locally_assigned_object_not_flagged(self) -> None:
+        source = """
+def test_local_object():
+    Config = make_config()
+    Config.value = 42
+    assert Config.value == 42
+"""
+        config = ReviewConfig()
+        analyzer = IsolationStaticAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_local_object")
+
+        result = analyzer.analyze(test_info)
+
+        class_issues = [i for i in result.issues if i.rule == "isolation.class_attr_modification"]
+        assert len(class_issues) == 0
+
+    def test_fixture_parameter_not_flagged(self) -> None:
+        source = """
+def test_with_fixture(db):
+    db.state = "ready"
+    assert db.state == "ready"
+"""
+        config = ReviewConfig()
+        analyzer = IsolationStaticAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_with_fixture")
+
+        result = analyzer.analyze(test_info)
+
+        class_issues = [i for i in result.issues if i.rule == "isolation.class_attr_modification"]
+        assert len(class_issues) == 0
+
+    def test_detects_os_environ_subscript_mutation(self) -> None:
+        source = """
+def test_env_mutation():
+    import os
+    os.environ["MY_VAR"] = "value"
+    assert os.environ["MY_VAR"] == "value"
+"""
+        config = ReviewConfig()
+        analyzer = IsolationStaticAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_env_mutation")
+
+        result = analyzer.analyze(test_info)
+
+        env_issues = [i for i in result.issues if i.rule == "isolation.env_mutation"]
+        assert len(env_issues) == 1
+        assert "os.environ" in env_issues[0].message
+        assert env_issues[0].severity == Severity.WARNING
+
+    def test_detects_os_environ_update_call(self) -> None:
+        source = """
+def test_env_update():
+    import os
+    os.environ.update({"KEY": "val"})
+    assert True
+"""
+        config = ReviewConfig()
+        analyzer = IsolationStaticAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_env_update")
+
+        result = analyzer.analyze(test_info)
+
+        env_issues = [i for i in result.issues if i.rule == "isolation.env_mutation"]
+        assert len(env_issues) == 1
+        assert "update" in env_issues[0].message
+
+    def test_detects_bare_patch_call(self) -> None:
+        source = """
+def test_bare_patch():
+    from unittest.mock import patch
+    patch("module.Class.method", return_value=42)
+    assert True
+"""
+        config = ReviewConfig()
+        analyzer = IsolationStaticAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_bare_patch")
+
+        result = analyzer.analyze(test_info)
+
+        patch_issues = [i for i in result.issues if i.rule == "isolation.bare_patch"]
+        assert len(patch_issues) == 1
+        assert patch_issues[0].severity == Severity.WARNING
+
+    def test_patch_with_context_manager_not_flagged(self) -> None:
+        source = """
+def test_patch_ctx():
+    from unittest.mock import patch
+    with patch("module.Class.method", return_value=42):
+        assert True
+"""
+        config = ReviewConfig()
+        analyzer = IsolationStaticAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_patch_ctx")
+
+        result = analyzer.analyze(test_info)
+
+        patch_issues = [i for i in result.issues if i.rule == "isolation.bare_patch"]
+        assert len(patch_issues) == 0
+
+    def test_os_environ_read_not_flagged(self) -> None:
+        source = """
+def test_env_read():
+    import os
+    val = os.environ.get("HOME")
+    assert val is not None
+"""
+        config = ReviewConfig()
+        analyzer = IsolationStaticAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_env_read")
+
+        result = analyzer.analyze(test_info)
+
+        env_issues = [i for i in result.issues if i.rule == "isolation.env_mutation"]
+        assert len(env_issues) == 0
 
 
 class TestIsolationAnalyzerIntegration:

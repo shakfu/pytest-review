@@ -69,7 +69,7 @@ class TestPluginOutput:
         """Shows excellent quality when no issues found."""
         # Use a well-formed test that passes all analyzers
         pytester.makepyfile("""
-            def test_user_authentication_succeeds_with_valid_credentials():
+            def test_validates_user_authentication_with_valid_credentials():
                 user_id = 123
                 expected_id = 123
                 assert user_id == expected_id

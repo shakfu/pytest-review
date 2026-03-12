@@ -1,4 +1,4 @@
-.PHONY: install dev test lint type-check clean all review review-html review-json \
+.PHONY: install dev test lint typecheck qa clean all review review-html review-json \
        example example-html example-json example-only example-strict example-min-score \
        example-verify build publish publish-test check
 
@@ -77,15 +77,15 @@ exit(1 if missing else 0) \
 	@echo "All expected rules detected!"
 
 lint:
-	@uv run ruff check src/ tests/
-	@uv run ruff format --check src/ tests/
+	@uv run ruff check --fix src/ tests/
 
 format:
-	@uv run ruff check --fix src/ tests/
 	@uv run ruff format src/ tests/
 
-type-check:
+typecheck:
 	@uv run mypy src/
+
+qa: test typecheck lint format
 
 clean:
 	@rm -rf build/

@@ -39,9 +39,9 @@ class NamingAnalyzer(StaticAnalyzer):
 
     def __init__(self, config: ReviewConfig) -> None:
         super().__init__(config)
-        min_len_opt = self.get_option("min_length", 10)
-        self._min_length = int(str(min_len_opt)) if min_len_opt is not None else 10
-        self._require_docstring = bool(self.get_option("require_docstring", False))
+        typed = config.get_naming_config()
+        self._min_length = typed.min_length
+        self._require_docstring = typed.require_docstring
 
     def _analyze_ast(self, test: TestItemInfo, result: AnalyzerResult) -> None:
         name = test.name
@@ -108,6 +108,37 @@ class NamingAnalyzer(StaticAnalyzer):
                 )
             )
 
+        # Check for redundant prefix duplication (test_test_...)
+        if self._has_redundant_prefix(name):
+            result.add_issue(
+                Issue(
+                    rule="naming.redundant_prefix",
+                    message=f"Redundant prefix in test name: '{name}'",
+                    severity=Severity.INFO,
+                    file_path=test.file_path,
+                    line=test.line,
+                    test_name=name,
+                    suggestion="Remove the duplicated word in the test name",
+                )
+            )
+
+        # Check for missing verb/action word after test_
+        if not self._has_action_verb(name):
+            result.add_issue(
+                Issue(
+                    rule="naming.missing_verb",
+                    message=f"Test name '{name}' lacks an action verb",
+                    severity=Severity.INFO,
+                    file_path=test.file_path,
+                    line=test.line,
+                    test_name=name,
+                    suggestion=(
+                        "Start with a verb describing behavior: "
+                        "test_returns_*, test_raises_*, test_creates_*, etc."
+                    ),
+                )
+            )
+
         # Check for unclear abbreviations
         unclear_abbrevs = self._find_unclear_abbreviations(name)
         if unclear_abbrevs:
@@ -128,6 +159,133 @@ class NamingAnalyzer(StaticAnalyzer):
         """Check if name follows snake_case convention."""
         # Allow test_ prefix and then snake_case
         return bool(re.match(r"^test_[a-z][a-z0-9_]*$", name))
+
+    @staticmethod
+    def _has_redundant_prefix(name: str) -> bool:
+        """Check for repeated words like test_test_connection."""
+        parts = name.lower().split("_")
+        return any(parts[i] == parts[i + 1] for i in range(len(parts) - 1))
+
+    # Common verbs that indicate behavioral test names
+    _ACTION_VERBS = frozenset(
+        {
+            "returns",
+            "raises",
+            "creates",
+            "handles",
+            "rejects",
+            "validates",
+            "detects",
+            "accepts",
+            "adds",
+            "removes",
+            "updates",
+            "deletes",
+            "sends",
+            "receives",
+            "parses",
+            "formats",
+            "converts",
+            "computes",
+            "calculates",
+            "checks",
+            "verifies",
+            "finds",
+            "filters",
+            "sorts",
+            "matches",
+            "allows",
+            "denies",
+            "blocks",
+            "prevents",
+            "ignores",
+            "skips",
+            "includes",
+            "excludes",
+            "loads",
+            "saves",
+            "reads",
+            "writes",
+            "connects",
+            "disconnects",
+            "starts",
+            "stops",
+            "runs",
+            "fails",
+            "passes",
+            "succeeds",
+            "errors",
+            "warns",
+            "logs",
+            "sets",
+            "gets",
+            "is",
+            "has",
+            "can",
+            "should",
+            "does",
+            "will",
+            "emits",
+            "triggers",
+            "fires",
+            "dispatches",
+            "propagates",
+            "renders",
+            "displays",
+            "shows",
+            "hides",
+            "enables",
+            "disables",
+            "initializes",
+            "configures",
+            "resets",
+            "clears",
+            "flushes",
+            "retries",
+            "recovers",
+            "processes",
+            "transforms",
+            "maps",
+            "reduces",
+            "merges",
+            "splits",
+            "joins",
+            "counts",
+            "measures",
+            "tracks",
+            "records",
+            "stores",
+            "caches",
+            "fetches",
+            "applies",
+            "reverts",
+            "rolls",
+            "migrates",
+            "imports",
+            "exports",
+            "serializes",
+            "deserializes",
+            "encodes",
+            "decodes",
+            "encrypts",
+            "decrypts",
+            "compresses",
+            "decompresses",
+            "notifies",
+            "alerts",
+        }
+    )
+
+    @classmethod
+    def _has_action_verb(cls, name: str) -> bool:
+        """Check if the test name starts with an action verb after test_."""
+        if not name.startswith("test_"):
+            return True  # not a standard test name, skip check
+        rest = name[5:]  # strip test_
+        if not rest:
+            return False
+        first_word = rest.split("_")[0].lower()
+        return first_word in cls._ACTION_VERBS
 
     @staticmethod
     def _find_unclear_abbreviations(name: str) -> list[str]:

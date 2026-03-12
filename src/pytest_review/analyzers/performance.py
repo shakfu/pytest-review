@@ -23,12 +23,9 @@ class PerformanceAnalyzer(DynamicAnalyzer):
 
     def __init__(self, config: ReviewConfig) -> None:
         super().__init__(config)
-        slow_opt = self.get_option("slow_threshold_ms", 500)
-        very_slow_opt = self.get_option("very_slow_threshold_ms", 2000)
-        self._slow_threshold_ms = float(str(slow_opt)) if slow_opt is not None else 500.0
-        self._very_slow_threshold_ms = (
-            float(str(very_slow_opt)) if very_slow_opt is not None else 2000.0
-        )
+        typed = config.get_performance_config()
+        self._slow_threshold_ms = typed.slow_threshold_ms
+        self._very_slow_threshold_ms = typed.very_slow_threshold_ms
         self._test_durations: dict[str, float] = {}
         self._test_results: dict[str, AnalyzerResult] = {}
 
@@ -76,16 +73,22 @@ class PerformanceAnalyzer(DynamicAnalyzer):
         return list(self._test_results.values())
 
     def get_statistics(self) -> dict[str, float]:
-        """Get performance statistics."""
+        """Get performance statistics including median and P95."""
         if not self._test_durations:
             return {}
 
-        durations = list(self._test_durations.values())
+        durations = sorted(self._test_durations.values())
+        n = len(durations)
         return {
+            "count": float(n),
             "total_ms": sum(durations),
-            "avg_ms": sum(durations) / len(durations),
-            "min_ms": min(durations),
-            "max_ms": max(durations),
+            "avg_ms": sum(durations) / n,
+            "median_ms": (
+                durations[n // 2] if n % 2 else (durations[n // 2 - 1] + durations[n // 2]) / 2
+            ),
+            "p95_ms": durations[int(n * 0.95)] if n >= 2 else durations[-1],
+            "min_ms": durations[0],
+            "max_ms": durations[-1],
             "slow_count": sum(1 for d in durations if d >= self._slow_threshold_ms),
             "very_slow_count": sum(1 for d in durations if d >= self._very_slow_threshold_ms),
         }
