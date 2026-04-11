@@ -100,3 +100,119 @@ class TestPluginOutput:
         assert "Quality: NEEDS IMPROVEMENT" in result.stdout.str()
         output = result.stdout.str()
         assert "assertions.trivial" in output or "Trivial assertion" in output
+
+
+class TestPluginMinSeverity:
+    """Test --review-min-severity filtering behavior."""
+
+    def test_default_hides_info_issues(self, pytester: pytest.Pytester) -> None:
+        """By default (min_severity=warning), INFO issues are hidden."""
+        # ``is not None`` triggers assertions.low_value, which is INFO.
+        pytester.makepyfile("""
+            def test_returns_something_meaningful_here():
+                value = compute()
+                assert value is not None
+
+            def compute():
+                return 42
+        """)
+        result = pytester.runpytest("--review")
+        output = result.stdout.str()
+        # INFO rule should NOT appear
+        assert "assertions.low_value" not in output
+        assert "Low-value assertion" not in output
+
+    def test_explicit_info_shows_info_issues(self, pytester: pytest.Pytester) -> None:
+        """--review-min-severity=info restores INFO visibility."""
+        pytester.makepyfile("""
+            def test_returns_something_meaningful_here():
+                value = compute()
+                assert value is not None
+
+            def compute():
+                return 42
+        """)
+        result = pytester.runpytest("--review", "--review-min-severity=info")
+        output = result.stdout.str()
+        assert "assertions.low_value" in output or "Low-value assertion" in output
+
+    def test_error_only_hides_warnings(self, pytester: pytest.Pytester) -> None:
+        """--review-min-severity=error hides WARNING-level issues."""
+        # ``assertions.insufficient`` is a WARNING; configure min_assertions=2
+        # so a single-assert test triggers it.
+        pytester.makepyfile("""
+            def test_has_only_one_assertion_here():
+                x = compute()
+                assert x == 42
+
+            def compute():
+                return 42
+        """)
+        pytester.makepyprojecttoml("""
+            [tool.pytest-review.analyzers.assertions]
+            enabled = true
+            min_assertions = 2
+        """)
+        result = pytester.runpytest("--review", "--review-min-severity=error")
+        output = result.stdout.str()
+        assert "has only 1 assertion" not in output
+        # Sanity: without the filter the warning would appear
+        result2 = pytester.runpytest("--review", "--review-min-severity=warning")
+        assert "has only 1 assertion" in result2.stdout.str()
+
+    def test_filtering_does_not_affect_score(self, pytester: pytest.Pytester) -> None:
+        """Hidden issues still count toward the score."""
+        pytester.makepyfile("""
+            def test_returns_something_meaningful_here():
+                value = compute()
+                assert value is not None
+
+            def compute():
+                return 42
+        """)
+        shown = pytester.runpytest("--review", "--review-min-severity=info").stdout.str()
+        hidden = pytester.runpytest("--review", "--review-min-severity=error").stdout.str()
+
+        def extract_score(out: str) -> str:
+            for line in out.splitlines():
+                if "Overall Score:" in line:
+                    return line.strip()
+            raise AssertionError("Overall Score line missing from output")
+
+        assert extract_score(shown) == extract_score(hidden)
+
+    def test_config_file_sets_min_severity(self, pytester: pytest.Pytester) -> None:
+        """[tool.pytest-review] min_severity in pyproject.toml is honored."""
+        pytester.makepyfile("""
+            def test_returns_something_meaningful_here():
+                value = compute()
+                assert value is not None
+
+            def compute():
+                return 42
+        """)
+        pytester.makepyprojecttoml("""
+            [tool.pytest-review]
+            min_severity = "info"
+        """)
+        result = pytester.runpytest("--review")
+        output = result.stdout.str()
+        assert "assertions.low_value" in output or "Low-value assertion" in output
+
+    def test_cli_overrides_config(self, pytester: pytest.Pytester) -> None:
+        """--review-min-severity on the CLI overrides pyproject.toml."""
+        pytester.makepyfile("""
+            def test_returns_something_meaningful_here():
+                value = compute()
+                assert value is not None
+
+            def compute():
+                return 42
+        """)
+        pytester.makepyprojecttoml("""
+            [tool.pytest-review]
+            min_severity = "info"
+        """)
+        result = pytester.runpytest("--review", "--review-min-severity=error")
+        output = result.stdout.str()
+        assert "assertions.low_value" not in output

@@ -25,9 +25,24 @@ class TestReviewConfig:
         assert config.enabled is True
         assert config.strict is False
         assert config.min_score == 0
+        assert config.min_severity == "warning"
         assert config.analyzers == {}
         assert config.ignore_paths == []
         assert config.ignore_rules == []
+
+    def test_min_severity_from_dict(self) -> None:
+        config = ReviewConfig.from_dict({"min_severity": "error"})
+        assert config.min_severity == "error"
+
+    def test_min_severity_normalizes_case(self) -> None:
+        config = ReviewConfig.from_dict({"min_severity": "WARNING"})
+        assert config.min_severity == "warning"
+
+    def test_min_severity_rejects_invalid(self) -> None:
+        import pytest
+
+        with pytest.raises(ValueError, match="min_severity"):
+            ReviewConfig(min_severity="critical")
 
     def test_from_dict(self, sample_pyproject_config: dict) -> None:
         config = ReviewConfig.from_dict(sample_pyproject_config)

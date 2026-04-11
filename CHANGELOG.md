@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3]
+
+### Added
+
+- `--review-min-severity` option (and corresponding `min_severity` key in `[tool.pytest-review]`) to filter displayed issues by severity. Accepts `info`, `warning`, or `error`. CLI flag overrides the config value. Filtering is display-only: scoring, `--review-strict`, and `--review-min-score` continue to operate on the full, unfiltered set of issues.
+- `assertions.missing` now recognizes mock assertion methods (`mock.assert_called_once()`, `assert_called_with()`, `assert_any_call()`, `assert_not_called()`, `assert_has_calls()`), unittest-style helpers (`self.assertEqual()`, `assertTrue()`, `assertRaises()`, etc.), user-defined assertion helpers whose names begin with `assert_` (e.g. `assert_rss_bounded()`), and unqualified `raises()` / `warns()` / `approx()` imported from `pytest`.
+
+### Changed
+
+- **Breaking:** The default display threshold is now `warning`. `info`-level issues (e.g. `assertions.low_value`, `assertions.yoda_condition`, `assertions.raises_without_match`, `naming.too_short`, `smells.magic_number`) are hidden from terminal/JSON/HTML reports by default. Run with `--review-min-severity=info` or set `min_severity = "info"` in `pyproject.toml` to restore the previous behavior. Scores are unaffected.
+
+### Fixed
+
+- False positives in `assertions.missing` for tests whose only assertions were mock assertion methods, unittest-style assertions, or user-defined `assert_*` helpers. Previously these were counted as assertion-less because the detector only recognized `assert` statements and qualified `pytest.raises`/`warns`/`approx`.
+
 ## [0.1.2]
 
 ### Added

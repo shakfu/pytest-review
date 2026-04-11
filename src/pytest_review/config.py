@@ -81,6 +81,9 @@ class AnalyzerConfig:
     options: dict[str, Any] = field(default_factory=dict)
 
 
+_VALID_SEVERITIES = ("info", "warning", "error")
+
+
 @dataclass
 class ReviewConfig:
     """Main configuration for pytest-review."""
@@ -88,9 +91,18 @@ class ReviewConfig:
     enabled: bool = True
     strict: bool = False
     min_score: int = 0
+    min_severity: str = "warning"
     analyzers: dict[str, AnalyzerConfig] = field(default_factory=dict)
     ignore_paths: list[str] = field(default_factory=list)
     ignore_rules: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        normalized = (self.min_severity or "warning").lower()
+        if normalized not in _VALID_SEVERITIES:
+            raise ValueError(
+                f"min_severity must be one of {_VALID_SEVERITIES}, got {self.min_severity!r}"
+            )
+        self.min_severity = normalized
 
     @classmethod
     def from_pyproject(cls, path: Path | None = None) -> ReviewConfig:
@@ -127,6 +139,7 @@ class ReviewConfig:
             enabled=data.get("enabled", True),
             strict=data.get("strict", False),
             min_score=data.get("min_score", 0),
+            min_severity=data.get("min_severity", "warning"),
             analyzers=analyzers,
             ignore_paths=ignore_config.get("paths", []),
             ignore_rules=ignore_config.get("rules", []),

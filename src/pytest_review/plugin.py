@@ -21,6 +21,7 @@ from pytest_review.analyzers import (
 from pytest_review.analyzers.base import (
     AnalyzerResult,
     DynamicAnalyzer,
+    Severity,
     StaticAnalyzer,
     TestItemInfo,
     parse_suppressed_rules,
@@ -260,6 +261,27 @@ class ReviewPlugin:
         """Get all analysis results."""
         return self._results
 
+    def get_display_results(self, min_severity: Severity) -> list[AnalyzerResult]:
+        """Return results with issues below ``min_severity`` removed.
+
+        Does not mutate the underlying results -- scoring and ``has_errors``
+        continue to operate on the full, unfiltered set.
+        """
+        filtered: list[AnalyzerResult] = []
+        for result in self._results:
+            kept = [issue for issue in result.issues if not (issue.severity < min_severity)]
+            if not kept:
+                continue
+            filtered.append(
+                AnalyzerResult(
+                    analyzer_name=result.analyzer_name,
+                    issues=kept,
+                    score=result.score,
+                    metadata=result.metadata,
+                )
+            )
+        return filtered
+
     def has_errors(self) -> bool:
         """Check if any analyzer found errors."""
         return any(r.has_errors for r in self._results)
@@ -295,6 +317,20 @@ def _get_plugin(config: Config) -> ReviewPlugin | None:
     """Retrieve the plugin instance from config.stash, or None."""
     result: ReviewPlugin | None = config.stash.get(_review_key, None)
     return result
+
+
+def _parse_severity(name: str) -> Severity:
+    """Map a severity string (``info``/``warning``/``error``) to a Severity enum."""
+    normalized = (name or "warning").lower()
+    if normalized == "info":
+        return Severity.INFO
+    if normalized == "warning":
+        return Severity.WARNING
+    if normalized == "error":
+        return Severity.ERROR
+    raise ValueError(
+        f"Invalid severity {name!r}; expected one of info, warning, error"
+    )
 
 
 def pytest_addoption(parser: Parser) -> None:
@@ -350,6 +386,16 @@ def pytest_addoption(parser: Parser) -> None:
         default=None,
         dest="review_exclude",
         help="Comma-separated list of analyzers to exclude",
+    )
+    group.addoption(
+        "--review-min-severity",
+        action="store",
+        default=None,
+        dest="review_min_severity",
+        choices=["info", "warning", "error"],
+        help="Only display issues at or above this severity (default: warning; "
+        "can also be set via [tool.pytest-review] min_severity in pyproject.toml). "
+        "Does not affect scoring or --review-strict.",
     )
     group.addoption(
         "--review-diff",
@@ -474,7 +520,12 @@ def pytest_terminal_summary(
     if plugin is None or not plugin._enabled:
         return
 
-    results = plugin.get_results()
+    # Resolve the effective display severity: CLI flag overrides config.
+    cli_severity = config.getoption("review_min_severity", default=None)
+    severity_name = cli_severity or plugin.review_config.min_severity
+    min_severity = _parse_severity(severity_name)
+
+    results = plugin.get_display_results(min_severity)
     total_tests = len(plugin._test_infos)
     score = plugin.calculate_score()
 

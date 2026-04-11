@@ -20,9 +20,13 @@ if TYPE_CHECKING:
 class AssertionVisitor(ast.NodeVisitor):
     """AST visitor that collects assertion information."""
 
+    # pytest helpers that act as assertions (qualified or bare)
+    _PYTEST_HELPERS = frozenset({"raises", "warns", "approx"})
+
     def __init__(self) -> None:
         self.assertions: list[ast.Assert] = []
         self.pytest_assertions: list[ast.Call] = []
+        self.helper_assertions: list[ast.Call] = []
         self.trivial_assertions: list[tuple[ast.Assert, str]] = []
         self.low_value_assertions: list[tuple[ast.Assert, str]] = []
         self.yoda_conditions: list[tuple[ast.Assert, str]] = []
@@ -36,16 +40,12 @@ class AssertionVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
-        # Check for pytest assertion helpers like pytest.raises, pytest.warns
-        if (
-            isinstance(node.func, ast.Attribute)
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "pytest"
-            and node.func.attr in ("raises", "warns", "approx")
-        ):
+        call_name = self._get_call_name(node.func)
+
+        if call_name in self._PYTEST_HELPERS:
             self.pytest_assertions.append(node)
-            # Check for pytest.raises without match= keyword
-            if node.func.attr == "raises":
+            # Check for raises() without match= keyword
+            if call_name == "raises":
                 has_match = any(
                     isinstance(kw.arg, str) and kw.arg == "match" for kw in node.keywords
                 )
@@ -56,7 +56,41 @@ class AssertionVisitor(ast.NodeVisitor):
                     elif isinstance(node.args[0], ast.Attribute):
                         exc_name = node.args[0].attr
                     self.raises_without_match.append((node, exc_name))
+        elif self._is_assertion_helper_name(call_name):
+            # Mock assertions (mock.assert_called_once, assert_called_with),
+            # unittest-style assertions (self.assertEqual, self.assertTrue),
+            # and user-defined helpers (assert_rss_bounded, assert_valid_response).
+            self.helper_assertions.append(node)
+
         self.generic_visit(node)
+
+    @staticmethod
+    def _get_call_name(func: ast.expr) -> str:
+        """Return the final name of a call target (e.g. ``foo`` for ``a.b.foo``)."""
+        if isinstance(func, ast.Name):
+            return func.id
+        if isinstance(func, ast.Attribute):
+            return func.attr
+        return ""
+
+    @staticmethod
+    def _is_assertion_helper_name(name: str) -> bool:
+        """Return True for names that conventionally denote an assertion helper.
+
+        Covers three families:
+        - ``assert_*`` snake_case helpers (mock ``assert_called_once``,
+          user-defined ``assert_rss_bounded``).
+        - unittest-style camelCase helpers (``assertEqual``, ``assertTrue``,
+          ``assertRaises``, ``assertIn``, ...).
+        - the bare ``assert_`` name itself.
+        """
+        if not name or not name.startswith("assert"):
+            return False
+        if name == "assert_" or name.startswith("assert_"):
+            return True
+        prefix_len = len("assert")
+        # assertEqual, assertTrue, assertRaises, ... (next char is uppercase)
+        return len(name) > prefix_len and name[prefix_len].isupper()
 
     def _check_trivial(self, node: ast.Assert) -> None:
         """Check if assertion is trivial (assert True, assert False, etc.)."""
@@ -123,7 +157,9 @@ class AssertionVisitor(ast.NodeVisitor):
 
     @property
     def total_assertions(self) -> int:
-        return len(self.assertions) + len(self.pytest_assertions)
+        return (
+            len(self.assertions) + len(self.pytest_assertions) + len(self.helper_assertions)
+        )
 
 
 class AssertionsAnalyzer(StaticAnalyzer):

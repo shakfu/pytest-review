@@ -48,20 +48,21 @@ Example output:
 
 ```
 ====================== pytest-review: Test Quality Report ======================
-  [X] tests/test_example.py:15 [test_empty] Test has no assertions
+  [X] <assertions> tests/test_example.py:15 [test_empty] Test has no assertions
       Suggestion: Add at least one assertion to verify expected behavior
-  [!] tests/test_example.py:20 [test_complex] Test has cyclomatic complexity of 12
+  [!] <complexity> tests/test_example.py:20 [test_complex] Test has cyclomatic complexity of 12
       Suggestion: Simplify test logic or split into multiple tests
 ----------------------------------- Summary ------------------------------------
   Tests analyzed: 25
   Errors: 2
   Warnings: 5
-  Info: 3
   Quality: NEEDS IMPROVEMENT
 
   Overall Score: 72.0/100 (C)
 ================================================================================
 ```
+
+By default, `info`-level suggestions are hidden. Pass `--review-min-severity=info` to see them.
 
 ## Command Line Options
 
@@ -72,7 +73,10 @@ Example output:
 | `--review-output` | Write report to file |
 | `--review-strict` | Fail if quality errors are found |
 | `--review-min-score` | Minimum required score (0-100) |
+| `--review-min-severity` | Only show issues at or above this severity: `info`, `warning` (default), `error`. Display only -- does not affect scoring or `--review-strict`. |
 | `--review-only` | Comma-separated list of analyzers to run |
+| `--review-exclude` | Comma-separated list of analyzers to exclude |
+| `--review-diff` | Only analyze tests in files changed relative to a base branch (default: auto-detect `main`/`master`) |
 
 ### Examples
 
@@ -91,6 +95,12 @@ pytest --review --review-min-score=80
 
 # Strict mode: fail on any errors
 pytest --review --review-strict
+
+# Show errors only (hide warnings and info)
+pytest --review --review-min-severity=error
+
+# Show everything, including info-level suggestions
+pytest --review --review-min-severity=info
 ```
 
 ## Configuration
@@ -102,6 +112,7 @@ Configure pytest-review in your `pyproject.toml`:
 enabled = true
 strict = false
 min_score = 0
+min_severity = "warning"  # display threshold: info, warning, or error
 
 [tool.pytest-review.analyzers]
 assertions = { enabled = true, min_assertions = 1 }
@@ -184,13 +195,16 @@ Issues that may indicate problems:
 
 ### Info (i)
 
-Suggestions for improvement:
+Suggestions for improvement. **Hidden by default** -- run with `--review-min-severity=info` (or set `min_severity = "info"` in `pyproject.toml`) to see them:
 
 - `naming.too_short` - Name could be more descriptive
 - `patterns.print_statement` - Debug print left in test
 - `performance.slow_test` - Test runs slowly
 - `smells.magic_number` - Literal number in assertion
 - `smells.eager_test` - Test verifies multiple methods
+- `assertions.low_value` - Weak assertion (`isinstance`, `is not None`)
+- `assertions.yoda_condition` - Reversed comparison (`assert 42 == x`)
+- `assertions.raises_without_match` - `pytest.raises()` without `match=`
 
 ## Acknowledgments
 
