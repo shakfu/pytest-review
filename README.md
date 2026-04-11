@@ -177,6 +177,7 @@ Critical issues that indicate likely bugs or useless tests:
 - `assertions.missing` - Test has no assertions
 - `assertions.trivial` - Trivial assertion like `assert True`
 - `assertions.tautology` - Comparing value to itself
+- `smells.swallowed_assertion` - `except AssertionError/Exception/BaseException` silently swallows assertion failures
 
 ### Warnings (!)
 
@@ -189,9 +190,11 @@ Issues that may indicate problems:
 - `patterns.bare_except` - Catches all exceptions
 - `patterns.sleep_in_test` - Uses `time.sleep()`
 - `isolation.global_modification` - Modifies global state
+- `isolation.process_mutation` - Mutates process-wide state (`os.chdir`, `sys.path`, `sys.argv`)
 - `smells.assertion_roulette` - Multiple assertions without messages
 - `smells.duplicate_assert` - Duplicate assertion statements
-- `smells.ignored_test` - Test is skipped with decorator
+- `smells.ignored_test` - Test is skipped via decorator, `pytest.skip(...)`, `pytest.xfail(...)`, `self.skipTest(...)`, or `raise SkipTest(...)`
+- `smells.early_return` - `return` in a test body, bypassing subsequent assertions
 
 ### Info (i)
 

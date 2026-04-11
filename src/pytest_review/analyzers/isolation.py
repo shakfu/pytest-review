@@ -135,6 +135,7 @@ class GlobalModificationVisitor(ast.NodeVisitor):
         self.global_declarations: list[str] = []
         self.class_attr_modifications: list[tuple[int, str]] = []
         self.env_mutations: list[tuple[int, str]] = []
+        self.process_mutations: list[tuple[int, str]] = []
         self._local_names = local_names
 
     def _is_external(self, name: str) -> bool:
@@ -158,12 +159,29 @@ class GlobalModificationVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
-        """Detect mutating method calls on class attributes and os.environ."""
+        """Detect mutating method calls on class attributes, os.environ, and process state."""
         if isinstance(node.func, ast.Attribute):
             method_name = node.func.attr
+            # os.chdir(...) -- process-wide cwd mutation
+            if (
+                method_name == "chdir"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "os"
+            ):
+                self.process_mutations.append((node.lineno, "os.chdir()"))
+                self.generic_visit(node)
+                return
             # Check for os.environ.update/pop/setdefault/clear/...
             if method_name in self.MUTATING_METHODS and self._is_os_environ(node.func.value):
                 self.env_mutations.append((node.lineno, f"os.environ.{method_name}()"))
+                self.generic_visit(node)
+                return
+            # sys.path.append / sys.argv.append / ... -- process-wide mutation
+            if method_name in self.MUTATING_METHODS and self._is_sys_mutable(node.func.value):
+                assert isinstance(node.func.value, ast.Attribute)  # for type narrowing
+                self.process_mutations.append(
+                    (node.lineno, f"sys.{node.func.value.attr}.{method_name}()")
+                )
                 self.generic_visit(node)
                 return
             # Check for Name.attr.mutating_method() pattern
@@ -177,6 +195,16 @@ class GlobalModificationVisitor(ast.NodeVisitor):
                         )
         self.generic_visit(node)
 
+    @staticmethod
+    def _is_sys_mutable(node: ast.AST) -> bool:
+        """Check if node is ``sys.path`` or ``sys.argv``."""
+        return (
+            isinstance(node, ast.Attribute)
+            and node.attr in ("path", "argv")
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "sys"
+        )
+
     def _is_os_environ(self, node: ast.AST) -> bool:
         """Check if node is os.environ."""
         return (
@@ -187,11 +215,19 @@ class GlobalModificationVisitor(ast.NodeVisitor):
         )
 
     def visit_Subscript(self, node: ast.Subscript) -> None:
-        """Detect modifications to module-level dicts/lists and os.environ."""
+        """Detect modifications to module-level dicts/lists, os.environ, and sys.*."""
         if isinstance(node.ctx, ast.Store):
             # Check for os.environ["KEY"] = ...
             if self._is_os_environ(node.value):
                 self.env_mutations.append((node.lineno, "os.environ[...] = ..."))
+                self.generic_visit(node)
+                return
+            # sys.path[...] = ... / sys.argv[...] = ...
+            if self._is_sys_mutable(node.value):
+                assert isinstance(node.value, ast.Attribute)
+                self.process_mutations.append(
+                    (node.lineno, f"sys.{node.value.attr}[...] = ...")
+                )
                 self.generic_visit(node)
                 return
             if isinstance(node.value, ast.Attribute) and isinstance(node.value.value, ast.Name):
@@ -255,6 +291,23 @@ class IsolationStaticAnalyzer(StaticAnalyzer):
                 )
             )
 
+        # Report process-wide state mutations (os.chdir, sys.path, sys.argv)
+        for line, detail in visitor.process_mutations:
+            result.add_issue(
+                Issue(
+                    rule="isolation.process_mutation",
+                    message=f"Test mutates process-wide state: {detail}",
+                    severity=Severity.WARNING,
+                    file_path=test.file_path,
+                    line=line,
+                    test_name=test.name,
+                    suggestion=(
+                        "Use monkeypatch.chdir / monkeypatch.syspath_prepend / "
+                        "monkeypatch.setattr to restore state after the test"
+                    ),
+                )
+            )
+
         # Check for bare mock.patch calls
         patch_visitor = MockPatchVisitor()
         patch_visitor.visit(test.node)
@@ -274,4 +327,5 @@ class IsolationStaticAnalyzer(StaticAnalyzer):
         result.metadata["global_modifications"] = len(visitor.global_writes)
         result.metadata["class_attr_modifications"] = len(visitor.class_attr_modifications)
         result.metadata["env_mutations"] = len(visitor.env_mutations)
+        result.metadata["process_mutations"] = len(visitor.process_mutations)
         result.metadata["bare_patches"] = len(patch_visitor.bare_patches)

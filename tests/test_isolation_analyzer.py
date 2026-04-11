@@ -242,6 +242,95 @@ def test_patch_ctx():
         patch_issues = [i for i in result.issues if i.rule == "isolation.bare_patch"]
         assert len(patch_issues) == 0
 
+    def test_detects_os_chdir(self) -> None:
+        source = """
+def test_chdir():
+    import os
+    os.chdir("/tmp")
+    assert os.getcwd() == "/tmp"
+"""
+        config = ReviewConfig()
+        analyzer = IsolationStaticAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_chdir")
+
+        result = analyzer.analyze(test_info)
+
+        process_issues = [i for i in result.issues if i.rule == "isolation.process_mutation"]
+        assert len(process_issues) == 1
+        assert "os.chdir" in process_issues[0].message
+        assert process_issues[0].severity == Severity.WARNING
+
+    def test_detects_sys_path_append(self) -> None:
+        source = """
+def test_sys_path_append():
+    import sys
+    sys.path.append("/some/path")
+    assert True
+"""
+        config = ReviewConfig()
+        analyzer = IsolationStaticAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_sys_path_append")
+
+        result = analyzer.analyze(test_info)
+
+        process_issues = [i for i in result.issues if i.rule == "isolation.process_mutation"]
+        assert len(process_issues) == 1
+        assert "sys.path.append" in process_issues[0].message
+        # Ensure it did NOT double-flag as class_attr_modification
+        class_issues = [i for i in result.issues if i.rule == "isolation.class_attr_modification"]
+        assert len(class_issues) == 0
+
+    def test_detects_sys_path_insert(self) -> None:
+        source = """
+def test_sys_path_insert():
+    import sys
+    sys.path.insert(0, "/some/path")
+    assert True
+"""
+        config = ReviewConfig()
+        analyzer = IsolationStaticAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_sys_path_insert")
+
+        result = analyzer.analyze(test_info)
+
+        process_issues = [i for i in result.issues if i.rule == "isolation.process_mutation"]
+        assert len(process_issues) == 1
+        assert "sys.path.insert" in process_issues[0].message
+
+    def test_detects_sys_path_subscript_assign(self) -> None:
+        source = """
+def test_sys_path_subscript():
+    import sys
+    sys.path[0] = "/new/path"
+    assert True
+"""
+        config = ReviewConfig()
+        analyzer = IsolationStaticAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_sys_path_subscript")
+
+        result = analyzer.analyze(test_info)
+
+        process_issues = [i for i in result.issues if i.rule == "isolation.process_mutation"]
+        assert len(process_issues) == 1
+        assert "sys.path" in process_issues[0].message
+
+    def test_detects_sys_argv_mutation(self) -> None:
+        source = """
+def test_sys_argv():
+    import sys
+    sys.argv.append("--flag")
+    assert True
+"""
+        config = ReviewConfig()
+        analyzer = IsolationStaticAnalyzer(config)
+        test_info = make_test_info(source.strip(), "test_sys_argv")
+
+        result = analyzer.analyze(test_info)
+
+        process_issues = [i for i in result.issues if i.rule == "isolation.process_mutation"]
+        assert len(process_issues) == 1
+        assert "sys.argv.append" in process_issues[0].message
+
     def test_os_environ_read_not_flagged(self) -> None:
         source = """
 def test_env_read():

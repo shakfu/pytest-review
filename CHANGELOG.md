@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `smells.ignored_test` now flags runtime `pytest.skip(...)` and `pytest.xfail(...)` calls inside test bodies, in addition to the existing `@pytest.mark.skip` / `@pytest.mark.skipif` decorator detection. `pytest.importorskip(...)` is deliberately excluded because it expresses a legitimate optional-dependency gate.
+- `smells.ignored_test` decorator detection now recognizes `@mark.skip` / `@mark.skipif` (from `from pytest import mark`), not just fully qualified `@pytest.mark.skip`.
+- `smells.ignored_test` now also catches unittest-style runtime skips: `self.skipTest(...)`, `raise unittest.SkipTest(...)`, and bare `raise SkipTest(...)`.
+- New heuristic: `smells.early_return` flags `return` statements inside a test body. Tests have no reason to return, and an early `return` is a common hack to silently disable downstream assertions. Nested helper functions are excluded from the scan.
+- New heuristic: `smells.swallowed_assertion` (ERROR) flags `except AssertionError`, `except Exception`, and `except BaseException` inside test bodies -- all three silently swallow assertion failures, turning dead tests into apparently passing ones. Bare `except:` is intentionally left to `patterns.bare_except` to avoid double-reporting.
+- New heuristic: `isolation.process_mutation` flags process-wide state mutations: `os.chdir(...)`, `sys.path.append/insert/extend/...`, `sys.path[...] = ...`, `sys.argv.append(...)`, and `sys.argv[...] = ...`. Previously `sys.path.append` was reported under the generic `isolation.class_attr_modification` rule with an unhelpful suggestion; `os.chdir` was not caught at all.
+
+### Fixed
+
+- `SmellVisitor` ran `_finalize_checks` once per nested function definition inside a test, which could produce duplicate reports (e.g. assertion roulette counted twice) when a test contained helper functions. Finalization now runs exactly once, for the outer test function.
+
 ## [0.1.3]
 
 ### Added

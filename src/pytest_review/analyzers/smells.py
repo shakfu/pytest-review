@@ -14,13 +14,17 @@ Test smell concepts are based on research by:
 from __future__ import annotations
 
 import ast
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Iterator
 
 from pytest_review.analyzers.base import AnalyzerResult, Issue, Severity, StaticAnalyzer
 
 if TYPE_CHECKING:
     from pytest_review.analyzers.base import TestItemInfo
     from pytest_review.config import ReviewConfig
+
+
+# Exception types that swallow AssertionError when caught
+_ASSERTION_SWALLOWING_EXCEPTIONS = frozenset({"AssertionError", "Exception", "BaseException"})
 
 
 class SmellsAnalyzer(StaticAnalyzer):
@@ -60,6 +64,7 @@ class SmellVisitor(ast.NodeVisitor):
         self._assertion_messages: list[str] = []
         self._call_targets: set[str] = set()
         self._has_skip_marker = False
+        self._runtime_skip_calls: list[tuple[int, str]] = []
 
     def visit_Assert(self, node: ast.Assert) -> None:
         """Track assertions for roulette and duplicate detection."""
@@ -82,10 +87,55 @@ class SmellVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
-        """Track function calls for eager test detection."""
+        """Track function calls for eager-test and runtime-skip detection."""
         if self._analyzer._check_eager_test:
             self._extract_call_target(node)
+        self._check_runtime_skip(node)
         self.generic_visit(node)
+
+    def _check_runtime_skip(self, node: ast.Call) -> None:
+        """Record runtime skip calls in the test body.
+
+        Matches:
+        - ``pytest.skip(...)`` / ``pytest.xfail(...)`` (qualified only, to avoid
+          false-positives from user code with a ``skip`` helper).
+        - ``self.skipTest(...)`` (unittest.TestCase style).
+
+        ``pytest.importorskip(...)`` is deliberately excluded because it expresses
+        a legitimate optional-dependency gate, not a dead test.
+        """
+        func = node.func
+        if not isinstance(func, ast.Attribute):
+            return
+        if not isinstance(func.value, ast.Name):
+            return
+        # pytest.skip / pytest.xfail
+        if func.value.id == "pytest" and func.attr in ("skip", "xfail"):
+            self._runtime_skip_calls.append((node.lineno, f"pytest.{func.attr}"))
+            return
+        # self.skipTest (unittest.TestCase.skipTest)
+        if func.value.id == "self" and func.attr == "skipTest":
+            self._runtime_skip_calls.append((node.lineno, "self.skipTest"))
+
+    def visit_Raise(self, node: ast.Raise) -> None:
+        """Detect ``raise SkipTest(...)`` / ``raise unittest.SkipTest(...)``."""
+        self._check_raise_skip(node)
+        self.generic_visit(node)
+
+    def _check_raise_skip(self, node: ast.Raise) -> None:
+        exc = node.exc
+        if exc is None:
+            return
+        # ``raise SkipTest(...)`` -> exc is a Call; ``raise SkipTest`` -> exc is Name/Attr
+        target = exc.func if isinstance(exc, ast.Call) else exc
+        if isinstance(target, ast.Name) and target.id == "SkipTest":
+            self._runtime_skip_calls.append((node.lineno, "raise SkipTest"))
+            return
+        if isinstance(target, ast.Attribute) and target.attr == "SkipTest":
+            qualifier = ""
+            if isinstance(target.value, ast.Name):
+                qualifier = f"{target.value.id}."
+            self._runtime_skip_calls.append((node.lineno, f"raise {qualifier}SkipTest"))
 
     def _extract_call_target(self, node: ast.AST) -> None:
         """Extract the function/method being called."""
@@ -127,15 +177,22 @@ class SmellVisitor(ast.NodeVisitor):
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         """Check for skip decorators and visit body."""
-        self._check_skip_decorator(node)
+        # Only check decorators on the test function itself, not on nested helpers.
+        if node is self._test.node:
+            self._check_skip_decorator(node)
         self.generic_visit(node)
-        self._finalize_checks()
+        # _finalize_checks runs once, for the outer test only, so body-scanning
+        # checks (early_return, swallowed_assertion, ...) aren't duplicated.
+        if node is self._test.node:
+            self._finalize_checks()
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         """Check for skip decorators and visit body."""
-        self._check_skip_decorator(node)
+        if node is self._test.node:
+            self._check_skip_decorator(node)
         self.generic_visit(node)
-        self._finalize_checks()
+        if node is self._test.node:
+            self._finalize_checks()
 
     def _check_skip_decorator(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         """Check if test has skip decorator."""
@@ -146,6 +203,8 @@ class SmellVisitor(ast.NodeVisitor):
                 "skipif",
                 "pytest.mark.skip",
                 "pytest.mark.skipif",
+                "mark.skip",
+                "mark.skipif",
                 "unittest.skip",
                 "unittest.skipIf",
                 "unittest.skipUnless",
@@ -188,6 +247,126 @@ class SmellVisitor(ast.NodeVisitor):
         self._check_conditional_logic()
         self._check_fixture_overuse()
         self._check_try_except()
+        self._check_early_return()
+        self._check_swallowed_assertion()
+        self._report_runtime_skips()
+
+    def _walk_test_body(self) -> Iterator[ast.AST]:
+        """Yield every node in the test function body, excluding nested scopes.
+
+        Nested function definitions, lambdas, and class bodies are skipped
+        entirely (neither the scope node itself nor its contents are yielded),
+        so smells inside helpers defined inside the test are not attributed to
+        the test itself.
+        """
+
+        _NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+
+        def _walk(node: ast.AST) -> Iterator[ast.AST]:
+            if isinstance(node, _NESTED_SCOPES):
+                return
+            yield node
+            for child in ast.iter_child_nodes(node):
+                yield from _walk(child)
+
+        for stmt in self._test.node.body:
+            yield from _walk(stmt)
+
+    def _check_early_return(self) -> None:
+        """Flag ``return`` statements in the test body.
+
+        Tests have no reason to return a value; an early ``return`` is a common
+        hack for "temporarily disabling" downstream assertions without deleting
+        them, producing a test that silently passes. Nested function definitions
+        are excluded by ``_walk_test_body``.
+        """
+        for node in self._walk_test_body():
+            if not isinstance(node, ast.Return):
+                continue
+            self._result.add_issue(
+                Issue(
+                    rule="smells.early_return",
+                    message="Test contains a 'return' which bypasses subsequent assertions",
+                    severity=Severity.WARNING,
+                    file_path=self._test.file_path,
+                    line=node.lineno,
+                    test_name=self._test.name,
+                    suggestion=(
+                        "Remove the 'return'; if the test should be conditional, "
+                        "use @pytest.mark.skipif or split into separate tests"
+                    ),
+                )
+            )
+
+    def _check_swallowed_assertion(self) -> None:
+        """Flag ``except AssertionError/Exception/BaseException`` inside a test.
+
+        Catching one of these types silently swallows assertion failures, so the
+        test appears to pass while its checks are effectively dead. Bare
+        ``except:`` is already reported by ``patterns.bare_except`` and is not
+        flagged here to avoid double reporting.
+        """
+        seen_lines: set[int] = set()
+        for node in self._walk_test_body():
+            if not isinstance(node, ast.Try):
+                continue
+            for handler in node.handlers:
+                if handler.type is None:
+                    continue  # bare except -- handled by patterns.bare_except
+                caught = self._exception_names_in(handler.type)
+                swallowing = caught & _ASSERTION_SWALLOWING_EXCEPTIONS
+                if not swallowing or handler.lineno in seen_lines:
+                    continue
+                seen_lines.add(handler.lineno)
+                label = ", ".join(sorted(swallowing))
+                self._result.add_issue(
+                    Issue(
+                        rule="smells.swallowed_assertion",
+                        message=(
+                            f"Test catches {label}, which silently swallows "
+                            "assertion failures"
+                        ),
+                        severity=Severity.ERROR,
+                        file_path=self._test.file_path,
+                        line=handler.lineno,
+                        test_name=self._test.name,
+                        suggestion=(
+                            "Use pytest.raises(...) for expected exceptions and "
+                            "let AssertionError propagate"
+                        ),
+                    )
+                )
+
+    @staticmethod
+    def _exception_names_in(node: ast.AST) -> set[str]:
+        """Return the set of exception names referenced in an ``except`` type spec."""
+        names: set[str] = set()
+        if isinstance(node, ast.Name):
+            names.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            names.add(node.attr)
+        elif isinstance(node, ast.Tuple):
+            for elt in node.elts:
+                names.update(SmellVisitor._exception_names_in(elt))
+        return names
+
+    def _report_runtime_skips(self) -> None:
+        """Emit one issue per ``pytest.skip(...)`` / ``pytest.xfail(...)`` call."""
+        for lineno, name in self._runtime_skip_calls:
+            self._result.add_issue(
+                Issue(
+                    rule="smells.ignored_test",
+                    message=f"Test calls {name}(...) at runtime",
+                    severity=Severity.WARNING,
+                    file_path=self._test.file_path,
+                    line=lineno,
+                    test_name=self._test.name,
+                    suggestion=(
+                        "Prefer @pytest.mark.skipif at collection time, or remove "
+                        "the skip once the underlying issue is resolved"
+                    ),
+                )
+            )
 
     def _check_assertion_roulette(self) -> None:
         """Check for multiple assertions without messages."""

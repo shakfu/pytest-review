@@ -161,6 +161,276 @@ def test_example():
         rules = [issue.rule for issue in result.issues]
         assert "smells.ignored_test" in rules
 
+    def test_detects_bare_mark_skip_decorator(self) -> None:
+        """``@mark.skip`` (from ``pytest import mark``) is flagged."""
+        source = """
+@mark.skip(reason="not ready")
+def test_example():
+    assert True
+"""
+        analyzer = SmellsAnalyzer(ReviewConfig())
+        test_info = make_test_info(source)
+        result = analyzer.analyze(test_info)
+
+        rules = [issue.rule for issue in result.issues]
+        assert "smells.ignored_test" in rules
+
+    def test_detects_runtime_pytest_skip(self) -> None:
+        """``pytest.skip(...)`` inside a test body is flagged."""
+        source = """
+def test_example():
+    pytest.skip("not implemented")
+    assert True
+"""
+        analyzer = SmellsAnalyzer(ReviewConfig())
+        test_info = make_test_info(source)
+        result = analyzer.analyze(test_info)
+
+        rules = [issue.rule for issue in result.issues]
+        assert "smells.ignored_test" in rules
+        skip_issues = [i for i in result.issues if i.rule == "smells.ignored_test"]
+        assert any("pytest.skip" in issue.message for issue in skip_issues)
+
+    def test_detects_runtime_pytest_xfail(self) -> None:
+        """``pytest.xfail(...)`` inside a test body is flagged."""
+        source = """
+def test_example():
+    pytest.xfail("known bug")
+    assert compute() == 42
+"""
+        analyzer = SmellsAnalyzer(ReviewConfig())
+        test_info = make_test_info(source)
+        result = analyzer.analyze(test_info)
+
+        skip_issues = [i for i in result.issues if i.rule == "smells.ignored_test"]
+        assert any("pytest.xfail" in issue.message for issue in skip_issues)
+
+    def test_detects_conditional_runtime_skip(self) -> None:
+        """``pytest.skip(...)`` nested inside a branch is still flagged."""
+        source = """
+def test_example():
+    if sys.platform == "win32":
+        pytest.skip("unix-only")
+    assert compute() == 42
+"""
+        analyzer = SmellsAnalyzer(ReviewConfig())
+        test_info = make_test_info(source)
+        result = analyzer.analyze(test_info)
+
+        skip_issues = [i for i in result.issues if i.rule == "smells.ignored_test"]
+        assert len(skip_issues) >= 1
+
+    def test_does_not_flag_importorskip(self) -> None:
+        """``pytest.importorskip(...)`` is not flagged (legitimate gate)."""
+        source = """
+def test_example():
+    numpy = pytest.importorskip("numpy")
+    assert numpy.zeros(3).sum() == 0
+"""
+        analyzer = SmellsAnalyzer(ReviewConfig())
+        test_info = make_test_info(source)
+        result = analyzer.analyze(test_info)
+
+        skip_issues = [i for i in result.issues if i.rule == "smells.ignored_test"]
+        assert len(skip_issues) == 0
+
+    def test_does_not_flag_user_defined_skip(self) -> None:
+        """Bare ``skip(...)`` (not qualified ``pytest.skip``) is not flagged."""
+        source = """
+def test_example():
+    skip = compute_skip_count()
+    assert skip == 0
+"""
+        analyzer = SmellsAnalyzer(ReviewConfig())
+        test_info = make_test_info(source)
+        result = analyzer.analyze(test_info)
+
+        skip_issues = [i for i in result.issues if i.rule == "smells.ignored_test"]
+        assert len(skip_issues) == 0
+
+    def test_detects_self_skip_test(self) -> None:
+        """``self.skipTest(...)`` (unittest style) is flagged."""
+        source = """
+def test_example(self):
+    self.skipTest("not ready")
+    self.assertEqual(compute(), 42)
+"""
+        analyzer = SmellsAnalyzer(ReviewConfig())
+        test_info = make_test_info(source)
+        result = analyzer.analyze(test_info)
+
+        skip_issues = [i for i in result.issues if i.rule == "smells.ignored_test"]
+        assert any("self.skipTest" in issue.message for issue in skip_issues)
+
+    def test_detects_raise_skip_test(self) -> None:
+        """``raise unittest.SkipTest(...)`` is flagged."""
+        source = """
+def test_example():
+    raise unittest.SkipTest("not implemented")
+    assert compute() == 42
+"""
+        analyzer = SmellsAnalyzer(ReviewConfig())
+        test_info = make_test_info(source)
+        result = analyzer.analyze(test_info)
+
+        skip_issues = [i for i in result.issues if i.rule == "smells.ignored_test"]
+        assert any("SkipTest" in issue.message for issue in skip_issues)
+
+    def test_detects_bare_raise_skip_test(self) -> None:
+        """``raise SkipTest(...)`` (imported from unittest) is flagged."""
+        source = """
+def test_example():
+    raise SkipTest("not ready")
+    assert True
+"""
+        analyzer = SmellsAnalyzer(ReviewConfig())
+        test_info = make_test_info(source)
+        result = analyzer.analyze(test_info)
+
+        skip_issues = [i for i in result.issues if i.rule == "smells.ignored_test"]
+        assert len(skip_issues) >= 1
+
+    def test_detects_early_return(self) -> None:
+        """Early ``return`` in a test body is flagged."""
+        source = """
+def test_example():
+    if flaky:
+        return
+    assert compute() == 42
+"""
+        analyzer = SmellsAnalyzer(ReviewConfig())
+        test_info = make_test_info(source)
+        result = analyzer.analyze(test_info)
+
+        early_return = [i for i in result.issues if i.rule == "smells.early_return"]
+        assert len(early_return) == 1
+
+    def test_detects_trailing_return(self) -> None:
+        """Even a trailing ``return`` is flagged (tests should not return)."""
+        source = """
+def test_example():
+    assert compute() == 42
+    return
+"""
+        analyzer = SmellsAnalyzer(ReviewConfig())
+        test_info = make_test_info(source)
+        result = analyzer.analyze(test_info)
+
+        early_return = [i for i in result.issues if i.rule == "smells.early_return"]
+        assert len(early_return) == 1
+
+    def test_return_in_nested_function_not_flagged(self) -> None:
+        """``return`` inside a helper nested in the test is not attributed to the test."""
+        source = """
+def test_example():
+    def helper():
+        return 42
+    assert helper() == 42
+"""
+        analyzer = SmellsAnalyzer(ReviewConfig())
+        test_info = make_test_info(source)
+        result = analyzer.analyze(test_info)
+
+        early_return = [i for i in result.issues if i.rule == "smells.early_return"]
+        assert len(early_return) == 0
+
+    def test_lambda_return_not_flagged(self) -> None:
+        """Lambda bodies are not scanned for early_return."""
+        source = """
+def test_example():
+    fn = lambda x: x + 1
+    assert fn(41) == 42
+"""
+        analyzer = SmellsAnalyzer(ReviewConfig())
+        test_info = make_test_info(source)
+        result = analyzer.analyze(test_info)
+
+        early_return = [i for i in result.issues if i.rule == "smells.early_return"]
+        assert len(early_return) == 0
+
+    def test_detects_swallowed_assertion_error(self) -> None:
+        """``except AssertionError`` is flagged as ERROR."""
+        source = """
+def test_example():
+    try:
+        assert compute() == 42
+    except AssertionError:
+        pass
+"""
+        analyzer = SmellsAnalyzer(ReviewConfig())
+        test_info = make_test_info(source)
+        result = analyzer.analyze(test_info)
+
+        swallowed = [i for i in result.issues if i.rule == "smells.swallowed_assertion"]
+        assert len(swallowed) == 1
+        assert swallowed[0].severity.value == "error"
+        assert "AssertionError" in swallowed[0].message
+
+    def test_detects_swallowed_exception(self) -> None:
+        """``except Exception`` is flagged because it also swallows AssertionError."""
+        source = """
+def test_example():
+    try:
+        assert compute() == 42
+    except Exception:
+        pass
+"""
+        analyzer = SmellsAnalyzer(ReviewConfig())
+        test_info = make_test_info(source)
+        result = analyzer.analyze(test_info)
+
+        swallowed = [i for i in result.issues if i.rule == "smells.swallowed_assertion"]
+        assert len(swallowed) == 1
+        assert "Exception" in swallowed[0].message
+
+    def test_detects_swallowed_assertion_in_tuple(self) -> None:
+        """``except (AssertionError, KeyError):`` is still flagged."""
+        source = """
+def test_example():
+    try:
+        assert compute() == 42
+    except (KeyError, AssertionError):
+        pass
+"""
+        analyzer = SmellsAnalyzer(ReviewConfig())
+        test_info = make_test_info(source)
+        result = analyzer.analyze(test_info)
+
+        swallowed = [i for i in result.issues if i.rule == "smells.swallowed_assertion"]
+        assert len(swallowed) == 1
+
+    def test_specific_exception_not_flagged(self) -> None:
+        """``except ValueError`` does not swallow AssertionError and is not flagged."""
+        source = """
+def test_example():
+    try:
+        do_work()
+    except ValueError:
+        pytest.fail("unexpected ValueError")
+"""
+        analyzer = SmellsAnalyzer(ReviewConfig())
+        test_info = make_test_info(source)
+        result = analyzer.analyze(test_info)
+
+        swallowed = [i for i in result.issues if i.rule == "smells.swallowed_assertion"]
+        assert len(swallowed) == 0
+
+    def test_bare_except_not_double_flagged_here(self) -> None:
+        """Bare ``except:`` is not flagged by swallowed_assertion (bare_except handles it)."""
+        source = """
+def test_example():
+    try:
+        assert compute() == 42
+    except:
+        pass
+"""
+        analyzer = SmellsAnalyzer(ReviewConfig())
+        test_info = make_test_info(source)
+        result = analyzer.analyze(test_info)
+
+        swallowed = [i for i in result.issues if i.rule == "smells.swallowed_assertion"]
+        assert len(swallowed) == 0
+
     def test_detects_eager_test(self) -> None:
         """Tests calling many distinct methods are flagged."""
         source = """
@@ -333,3 +603,17 @@ class TestSmellsAnalyzerIntegration:
         result.assert_outcomes(skipped=1)
         # The issue is detected but output goes to captured stdout
         assert "skipped with @pytest.mark.skip" in result.stdout.str()
+
+    def test_detects_runtime_skip_in_real_run(self, pytester: pytest.Pytester) -> None:
+        pytester.makepyfile("""
+            import pytest
+
+            def test_runtime_skipped():
+                pytest.skip("demo")
+                assert True
+        """)
+
+        result = pytester.runpytest("--review", "--review-only=smells", "-v")
+        result.assert_outcomes(skipped=1)
+        assert "pytest.skip" in result.stdout.str()
+        assert "runtime" in result.stdout.str()
