@@ -17,6 +17,9 @@ pytest-review analyzes your test suite and provides actionable feedback on test 
 - **Multiple Output Formats**: Terminal, JSON, and HTML reports
 - **Configurable**: Customize thresholds and enable/disable analyzers
 - **Quality Scoring**: Get a letter grade (A-F) for your test suite
+- **Incremental Caching**: Skip re-analysis of unchanged files across runs
+- **Parallel Analysis**: Distribute static analysis across multiple processes
+- **Plugin API**: Register custom analyzers via entry points
 
 ### Analyzers
 
@@ -77,6 +80,8 @@ By default, `info`-level suggestions are hidden. Pass `--review-min-severity=inf
 | `--review-only` | Comma-separated list of analyzers to run |
 | `--review-exclude` | Comma-separated list of analyzers to exclude |
 | `--review-diff` | Only analyze tests in files changed relative to a base branch (default: auto-detect `main`/`master`) |
+| `--review-workers` | Number of parallel worker processes for static analysis. `0` = auto (default), `1` = sequential |
+| `--review-no-cache` | Disable incremental result caching across runs |
 
 ### Examples
 
@@ -101,6 +106,12 @@ pytest --review --review-min-severity=error
 
 # Show everything, including info-level suggestions
 pytest --review --review-min-severity=info
+
+# Force sequential analysis (disable parallelism)
+pytest --review --review-workers=1
+
+# Disable result caching
+pytest --review --review-no-cache
 ```
 
 ## Configuration
@@ -208,6 +219,98 @@ Suggestions for improvement. **Hidden by default** -- run with `--review-min-sev
 - `assertions.low_value` - Weak assertion (`isinstance`, `is not None`)
 - `assertions.yoda_condition` - Reversed comparison (`assert 42 == x`)
 - `assertions.raises_without_match` - `pytest.raises()` without `match=`
+
+## Performance
+
+### Incremental Caching
+
+Static analysis results are cached per file, keyed on a SHA-256 content hash and a hash of the active analyzer configuration. On subsequent runs, unchanged files are skipped entirely. The cache is stored in pytest's `.pytest_cache/` directory and is invalidated automatically when file contents or config change.
+
+Disable caching with `--review-no-cache`. Clear the cache with pytest's built-in `--cache-clear`.
+
+### Parallel Analysis
+
+For large test suites, static analysis can run in parallel across files using a `ProcessPoolExecutor`. By default (`--review-workers=0`), parallelism is auto-enabled when the suite has 200+ tests across 8+ files. Use `--review-workers=N` to set a specific worker count, or `--review-workers=1` to force sequential execution.
+
+## Custom Analyzers
+
+Third-party packages can register custom analyzers via the `pytest_review` entry point group. No changes to pytest-review are required.
+
+### Creating an Analyzer
+
+Subclass `StaticAnalyzer` (for AST-based analysis) or `DynamicAnalyzer` (for runtime analysis):
+
+```python
+# my_package/analyzer.py
+from pytest_review.analyzers.base import (
+    AnalyzerResult, Issue, Severity, StaticAnalyzer, TestItemInfo,
+)
+
+class MyAnalyzer(StaticAnalyzer):
+    name = "my-analyzer"
+    description = "Checks for my custom pattern"
+    category = "clarity"  # scoring category (see below)
+
+    def _analyze_ast(self, test: TestItemInfo, result: AnalyzerResult) -> None:
+        # Walk test.node (an ast.FunctionDef) and add issues
+        result.add_issue(
+            Issue(
+                rule="my-analyzer.example",
+                message="Example issue found",
+                severity=Severity.WARNING,
+                file_path=test.file_path,
+                line=test.line,
+                test_name=test.name,
+                suggestion="How to fix it",
+            )
+        )
+```
+
+### Registering via Entry Points
+
+In your package's `pyproject.toml`, declare the entry point:
+
+```toml
+[project.entry-points.pytest_review]
+my-analyzer = "my_package.analyzer:MyAnalyzer"
+```
+
+Once the package is installed, pytest-review discovers the analyzer automatically when `--review` is used.
+
+### Configuration
+
+Users configure custom analyzers the same way as built-in ones:
+
+```toml
+[tool.pytest-review.analyzers.my-analyzer]
+enabled = true
+custom_option = 42
+```
+
+Options are accessible in the analyzer via `self.get_option("custom_option", default=0)`.
+
+### Scoring Integration
+
+Set the `category` class attribute to one of the 5 scoring categories so issues contribute to the quality score:
+
+| Category | Weight |
+|----------|--------|
+| `assertions` | 30% |
+| `clarity` | 25% |
+| `isolation` | 20% |
+| `simplicity` | 15% |
+| `performance` | 10% |
+
+Analyzers without a `category` are still reported but do not affect the score.
+
+### Filtering
+
+Custom analyzers work with `--review-only` and `--review-exclude` using their `name` attribute:
+
+```bash
+pytest --review --review-only=my-analyzer
+pytest --review --review-exclude=my-analyzer
+```
 
 ## Acknowledgments
 

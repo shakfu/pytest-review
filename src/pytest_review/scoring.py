@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from pytest_review.analyzers.base import AnalyzerResult, Severity
+from pytest_review.analyzers.base import AnalyzerResult, Issue, Severity
 
 
 @dataclass
@@ -70,8 +70,8 @@ class ScoringEngine:
         "performance": 0.10,  # 10% - Execution time
     }
 
-    # Analyzer to category mapping
-    ANALYZER_CATEGORIES = {
+    # Analyzer to category mapping (built-in analyzers)
+    ANALYZER_CATEGORIES: dict[str, str] = {
         "assertions": "assertions",
         "naming": "clarity",
         "isolation": "isolation",
@@ -93,6 +93,11 @@ class ScoringEngine:
         "assertions.missing": 20.0,  # Empty test
         "assertions.trivial": 10.0,  # assert True
     }
+
+    def __init__(self, extra_categories: dict[str, str] | None = None) -> None:
+        self._categories = dict(self.ANALYZER_CATEGORIES)
+        if extra_categories:
+            self._categories.update(extra_categories)
 
     def calculate_score(
         self,
@@ -142,18 +147,18 @@ class ScoringEngine:
 
         return breakdown
 
-    @staticmethod
     def _group_by_category(
+        self,
         results: list[AnalyzerResult],
-    ) -> dict[str, list[tuple[AnalyzerResult, Any]]]:
+    ) -> dict[str, list[tuple[AnalyzerResult, Issue]]]:
         """Group results by category."""
-        categories: dict[str, list[tuple[AnalyzerResult, Any]]] = {
+        categories: dict[str, list[tuple[AnalyzerResult, Issue]]] = {
             name: [] for name in ScoringEngine.CATEGORY_WEIGHTS
         }
 
         for result in results:
-            category = ScoringEngine.ANALYZER_CATEGORIES.get(result.analyzer_name)
-            if category:
+            category = self._categories.get(result.analyzer_name)
+            if category and category in categories:
                 for issue in result.issues:
                     categories[category].append((result, issue))
 
@@ -163,7 +168,7 @@ class ScoringEngine:
         self,
         category_name: str,
         weight: float,
-        issues: list[tuple[AnalyzerResult, Any]],
+        issues: list[tuple[AnalyzerResult, Issue]],
         total_tests: int,
     ) -> CategoryScore:
         """Calculate score for a single category."""

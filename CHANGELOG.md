@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4]
+
 ### Added
 
+- **Plugin API for custom analyzers**: third-party packages can now register analyzers via the `pytest_review` entry point group. Declare `[project.entry-points.pytest_review]` in your `pyproject.toml` pointing to a `StaticAnalyzer` or `DynamicAnalyzer` subclass. Discovered analyzers integrate automatically with `--review-only`/`--review-exclude`, `pyproject.toml` configuration, scoring, and parallel workers. Set the `category` class attribute to one of the 5 scoring categories (`assertions`, `clarity`, `isolation`, `simplicity`, `performance`) to contribute to the quality score.
+- **Incremental caching**: static analysis results are now cached per file, keyed on the SHA-256 content hash and a config hash. Unchanged files are skipped on subsequent runs. Disable with `--review-no-cache`.
+- **Parallel analysis**: `--review-workers=N` dispatches static analysis to a `ProcessPoolExecutor` across files. `--review-workers=0` (default) auto-enables parallelism for large suites (200+ tests across 8+ files). `--review-workers=1` forces sequential execution.
 - `smells.ignored_test` now flags runtime `pytest.skip(...)` and `pytest.xfail(...)` calls inside test bodies, in addition to the existing `@pytest.mark.skip` / `@pytest.mark.skipif` decorator detection. `pytest.importorskip(...)` is deliberately excluded because it expresses a legitimate optional-dependency gate.
 - `smells.ignored_test` decorator detection now recognizes `@mark.skip` / `@mark.skipif` (from `from pytest import mark`), not just fully qualified `@pytest.mark.skip`.
 - `smells.ignored_test` now also catches unittest-style runtime skips: `self.skipTest(...)`, `raise unittest.SkipTest(...)`, and bare `raise SkipTest(...)`.
@@ -16,9 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New heuristic: `smells.swallowed_assertion` (ERROR) flags `except AssertionError`, `except Exception`, and `except BaseException` inside test bodies -- all three silently swallow assertion failures, turning dead tests into apparently passing ones. Bare `except:` is intentionally left to `patterns.bare_except` to avoid double-reporting.
 - New heuristic: `isolation.process_mutation` flags process-wide state mutations: `os.chdir(...)`, `sys.path.append/insert/extend/...`, `sys.path[...] = ...`, `sys.argv.append(...)`, and `sys.argv[...] = ...`. Previously `sys.path.append` was reported under the generic `isolation.class_attr_modification` rule with an unhelpful suggestion; `os.chdir` was not caught at all.
 
+### Changed
+
+- `ScoringEngine._group_by_category` and `_calculate_category_score` now use `Issue` instead of `Any` in their type signatures.
+
 ### Fixed
 
 - `SmellVisitor` ran `_finalize_checks` once per nested function definition inside a test, which could produce duplicate reports (e.g. assertion roulette counted twice) when a test contained helper functions. Finalization now runs exactly once, for the outer test function.
+- `collect_test_info()` re-read and re-parsed the entire file for every test function, resulting in O(N) full-file parses for a file with N tests. Parsed ASTs are now cached per file path for the duration of the session.
+- `collect_test_info()` matched test functions by name only, ignoring the enclosing class. Identically-named methods in different classes within the same file (e.g. `TestA.test_login` and `TestB.test_login`) could be misidentified. The match now verifies the parent `ClassDef` when the test belongs to a class.
+- `_check_conditional_logic()` and `_check_try_except()` in `SmellVisitor` used `ast.walk()`, which traverses into nested function definitions. This was inconsistent with `_check_early_return()` and `_check_swallowed_assertion()`, which correctly used `_walk_test_body()` to exclude nested scopes. Both methods now use `_walk_test_body()`.
+- Removed unreachable `"urlopen": set()` entry from `PatternVisitor._SLOW_CALLS`. The `urlopen` key could never match because the lookup requires a module name, not a method name; `urllib.request.urlopen()` is handled by a dedicated code path.
 
 ## [0.1.3]
 

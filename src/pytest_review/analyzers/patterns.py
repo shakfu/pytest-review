@@ -177,7 +177,6 @@ class PatternVisitor(ast.NodeVisitor):
         "requests": {"get", "post", "put", "patch", "delete", "head", "options", "request"},
         "httpx": {"get", "post", "put", "patch", "delete", "head", "options", "request"},
         "urllib": {"urlopen"},
-        "urlopen": set(),  # handled via Name check
     }
 
     def _check_slow_call(self, node: ast.Call) -> None:

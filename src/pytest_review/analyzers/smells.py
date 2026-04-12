@@ -489,8 +489,7 @@ class SmellVisitor(ast.NodeVisitor):
 
     def _check_conditional_logic(self) -> None:
         """Check for if/else branches in test body."""
-        node = self._test.node
-        for child in ast.walk(node):
+        for child in self._walk_test_body():
             if isinstance(child, ast.If):
                 self._result.add_issue(
                     Issue(
@@ -507,8 +506,7 @@ class SmellVisitor(ast.NodeVisitor):
 
     def _check_try_except(self) -> None:
         """Check for try/except blocks in test body."""
-        node = self._test.node
-        for child in ast.walk(node):
+        for child in self._walk_test_body():
             if isinstance(child, ast.Try):
                 self._result.add_issue(
                     Issue(

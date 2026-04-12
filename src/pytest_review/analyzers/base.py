@@ -124,6 +124,7 @@ class Analyzer(ABC):
 
     name: str = "base"
     description: str = "Base analyzer"
+    category: str = ""  # scoring category (assertions|clarity|isolation|simplicity|performance)
 
     def __init__(self, config: ReviewConfig) -> None:
         self.config = config
