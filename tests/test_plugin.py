@@ -62,6 +62,140 @@ class TestPluginOptions:
         assert "Tests analyzed: 1" in result.stdout.str()
 
 
+class TestParametrizedTests:
+    """Parametrized tests must be reachable by static analysis.
+
+    Pytest names parametrized items ``test_foo[case0]`` while the AST function
+    is ``test_foo``; matching on the item name alone silently skipped them.
+    """
+
+    def test_parametrized_test_is_analyzed(self, pytester: pytest.Pytester) -> None:
+        """A bad assertion in a parametrized test is reported."""
+        pytester.makepyfile("""
+            import pytest
+
+            @pytest.mark.parametrize("value", [1, 2, 3])
+            def test_x(value):
+                assert True
+        """)
+        result = pytester.runpytest("--review", "--review-no-cache")
+        result.assert_outcomes(passed=3)
+        output = result.stdout.str()
+        assert "Trivial assertion" in output
+        assert "Non-descriptive test name: 'test_x'" in output
+
+    def test_parametrized_cases_counted_once(self, pytester: pytest.Pytester) -> None:
+        """All cases share one source function, so it is analyzed once."""
+        pytester.makepyfile("""
+            import pytest
+
+            @pytest.mark.parametrize("value", [1, 2, 3])
+            def test_x(value):
+                assert True
+        """)
+        result = pytester.runpytest("--review", "--review-no-cache")
+        result.assert_outcomes(passed=3)
+        output = result.stdout.str()
+        assert "Tests analyzed: 1" in output
+        # The same issue must not be repeated once per parameter set
+        assert output.count("Trivial assertion") == 1
+
+    def test_parametrized_method_in_class_is_analyzed(
+        self, pytester: pytest.Pytester
+    ) -> None:
+        """Class-based parametrized tests resolve to the right ClassDef."""
+        pytester.makepyfile("""
+            import pytest
+
+            class TestAlpha:
+                @pytest.mark.parametrize("value", [1, 2])
+                def test_y(self, value):
+                    assert True
+
+            class TestBeta:
+                def test_y(self):
+                    result = 1 + 1
+                    assert result == 2
+        """)
+        result = pytester.runpytest("--review", "--review-no-cache")
+        result.assert_outcomes(passed=3)
+        output = result.stdout.str()
+        assert "Tests analyzed: 2" in output
+        assert "Trivial assertion" in output
+
+    def test_non_parametrized_still_analyzed(self, pytester: pytest.Pytester) -> None:
+        """The name-resolution change must not regress plain tests."""
+        pytester.makepyfile("""
+            def test_x():
+                assert True
+        """)
+        result = pytester.runpytest("--review", "--review-no-cache")
+        assert "Tests analyzed: 1" in result.stdout.str()
+        assert "Trivial assertion" in result.stdout.str()
+
+
+class TestConfigEnforcement:
+    """``strict`` and ``min_score`` from pyproject.toml must be enforced."""
+
+    _BAD_TEST = """
+        def test_x():
+            pass
+    """
+
+    def test_config_strict_fails_run(self, pytester: pytest.Pytester) -> None:
+        """strict = true in pyproject.toml fails the run without any CLI flag."""
+        pytester.makepyfile(self._BAD_TEST)
+        pytester.makepyprojecttoml("""
+            [tool.pytest-review]
+            strict = true
+        """)
+        result = pytester.runpytest("--review", "--review-no-cache")
+        result.assert_outcomes(passed=1)
+        assert result.ret == pytest.ExitCode.TESTS_FAILED
+        assert "FAILED: Quality errors found" in result.stdout.str()
+
+    def test_config_strict_false_does_not_fail(self, pytester: pytest.Pytester) -> None:
+        """strict = false leaves the exit status untouched."""
+        pytester.makepyfile(self._BAD_TEST)
+        pytester.makepyprojecttoml("""
+            [tool.pytest-review]
+            strict = false
+        """)
+        result = pytester.runpytest("--review", "--review-no-cache")
+        assert result.ret == pytest.ExitCode.OK
+        assert "FAILED: Quality errors found" not in result.stdout.str()
+
+    def test_config_min_score_fails_run(self, pytester: pytest.Pytester) -> None:
+        """min_score in pyproject.toml is enforced without any CLI flag."""
+        pytester.makepyfile(self._BAD_TEST)
+        pytester.makepyprojecttoml("""
+            [tool.pytest-review]
+            min_score = 95
+        """)
+        result = pytester.runpytest("--review", "--review-no-cache")
+        result.assert_outcomes(passed=1)
+        assert result.ret == pytest.ExitCode.TESTS_FAILED
+        assert "below minimum 95" in result.stdout.str()
+
+    def test_cli_min_score_overrides_config(self, pytester: pytest.Pytester) -> None:
+        """An explicit --review-min-score wins over the config value."""
+        pytester.makepyfile(self._BAD_TEST)
+        pytester.makepyprojecttoml("""
+            [tool.pytest-review]
+            min_score = 95
+        """)
+        result = pytester.runpytest("--review", "--review-no-cache", "--review-min-score=1")
+        assert result.ret == pytest.ExitCode.OK
+        assert "below minimum" not in result.stdout.str()
+
+    def test_cli_strict_works_without_config(self, pytester: pytest.Pytester) -> None:
+        """--review-strict still fails the run on its own."""
+        pytester.makepyfile(self._BAD_TEST)
+        result = pytester.runpytest("--review", "--review-no-cache", "--review-strict")
+        assert result.ret == pytest.ExitCode.TESTS_FAILED
+        assert "FAILED: Quality errors found" in result.stdout.str()
+
+
 class TestPluginOutput:
     """Test plugin output formatting."""
 

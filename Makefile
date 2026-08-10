@@ -51,7 +51,7 @@ example-min-score:
 # Verify all analyzers detect expected issues
 example-verify:
 	@echo "Verifying all analyzers detect expected issues..."
-	@uv run pytest examples/bad_tests.py --review --review-format=json --review-output=/tmp/review.json -q
+	@uv run pytest examples/bad_tests.py --review --review-min-severity=info --review-format=json --review-output=/tmp/review.json -q
 	@uv run python -c "\
 import json; \
 data = json.load(open('/tmp/review.json')); \

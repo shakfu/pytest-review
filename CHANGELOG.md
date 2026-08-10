@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5]
+
+### Fixed
+
+- **Parametrized tests were skipped by static analysis entirely.** Test items were matched against the AST by `item.name`, which for a parametrized case is `test_foo[case0]` while the function node is named `test_foo`, so no match was ever found. Parametrized tests are now resolved via `Function.originalname` (falling back to stripping the parameter suffix). Because every case shares one source function, the function is analyzed once rather than once per case, so issues are not duplicated and score penalties are not multiplied.
+- **The incremental cache could return another file's results.** The cache key combined only the content hash and the config hash, so two test files with byte-identical contents shared a single entry and each could be served the other's cached `Issue.file_path` values -- reports pointed at the wrong file and per-file findings were duplicated or lost. The key now also includes the file path, normalized relative to the pytest root. Existing cache entries are invalidated by the key-format bump.
+- **`strict` and `min_score` in `[tool.pytest-review]` were parsed but never enforced.** Session finish and terminal reporting read only the CLI options, so a project configuring `strict = true` or `min_score = 80` in `pyproject.toml` silently got a passing exit status in CI. Both settings are now honoured, with CLI options taking precedence.
+- **Duplicate test names collapsed in the performance analyzer.** Runtime durations and slow-test issues were keyed on `item.name`, so identically named tests in different modules or classes overwrote each other, undercounting timing statistics and dropping slow-test findings. Dynamic analyzers now receive the pytest node id.
+- `--review` crashed with `AttributeError: 'Config' object has no attribute 'cache'` when pytest ran with `-p no:cacheprovider`.
+- `make example-verify` did not pass `--review-min-severity=info`, so INFO-severity rules were filtered out of the JSON report and the target failed despite all rules being detected correctly.
+
+### Changed
+
+- The `DynamicAnalyzer.on_test_start` / `on_test_end` hooks now document their first parameter as a unique test identifier (renamed `test_name` to `test_id`); the plugin passes pytest's node id rather than a bare function name. Third-party dynamic analyzers keying state on this value gain correct disambiguation; those that displayed it will now show a node id.
+
 ## [0.1.4]
 
 ### Added

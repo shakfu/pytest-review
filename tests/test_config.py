@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from pytest_review.config import AnalyzerConfig, ReviewConfig
 
@@ -44,7 +45,7 @@ class TestReviewConfig:
         with pytest.raises(ValueError, match="min_severity"):
             ReviewConfig(min_severity="critical")
 
-    def test_from_dict(self, sample_pyproject_config: dict) -> None:
+    def test_from_dict(self, sample_pyproject_config: dict[str, Any]) -> None:
         config = ReviewConfig.from_dict(sample_pyproject_config)
 
         assert config.enabled is True
@@ -56,7 +57,7 @@ class TestReviewConfig:
         assert config.ignore_paths == ["tests/legacy/*"]
         assert config.ignore_rules == ["naming.docstring"]
 
-    def test_get_analyzer_config_existing(self, sample_pyproject_config: dict) -> None:
+    def test_get_analyzer_config_existing(self, sample_pyproject_config: dict[str, Any]) -> None:
         config = ReviewConfig.from_dict(sample_pyproject_config)
         analyzer_config = config.get_analyzer_config("assertions")
 
@@ -70,14 +71,14 @@ class TestReviewConfig:
         assert analyzer_config.enabled is True  # default
         assert analyzer_config.options == {}
 
-    def test_is_analyzer_enabled(self, sample_pyproject_config: dict) -> None:
+    def test_is_analyzer_enabled(self, sample_pyproject_config: dict[str, Any]) -> None:
         config = ReviewConfig.from_dict(sample_pyproject_config)
 
         assert config.is_analyzer_enabled("assertions") is True
         assert config.is_analyzer_enabled("complexity") is False
         assert config.is_analyzer_enabled("nonexistent") is True  # default
 
-    def test_get_analyzer_option(self, sample_pyproject_config: dict) -> None:
+    def test_get_analyzer_option(self, sample_pyproject_config: dict[str, Any]) -> None:
         config = ReviewConfig.from_dict(sample_pyproject_config)
 
         assert config.get_analyzer_option("assertions", "min_assertions") == 1

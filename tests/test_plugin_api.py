@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -18,7 +17,6 @@ from pytest_review.analyzers.base import (
 from pytest_review.config import ReviewConfig
 from pytest_review.plugin import _discover_entry_point_analyzers
 from pytest_review.scoring import ScoringEngine
-
 
 # ---------------------------------------------------------------------------
 # Dummy analyzers used by tests
@@ -163,9 +161,8 @@ class TestDiscoverEntryPointAnalyzers:
         with patch(
             "pytest_review.plugin.importlib.metadata.entry_points",
             return_value=fake_eps,
-        ):
-            with pytest.warns(UserWarning, match="failed to load analyzer entry point"):
-                _discover_entry_point_analyzers()
+        ), pytest.warns(UserWarning, match="failed to load analyzer entry point"):
+            _discover_entry_point_analyzers()
 
     def test_empty_when_no_entry_points(self) -> None:
         with patch(

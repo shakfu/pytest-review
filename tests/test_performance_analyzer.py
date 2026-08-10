@@ -85,7 +85,9 @@ class TestPerformanceAnalyzer:
         results = analyzer.get_results()
         assert len(results) == 1
         assert "duration_ms" in results[0].metadata
-        assert 49 < results[0].metadata["duration_ms"] < 51
+        duration_ms = results[0].metadata["duration_ms"]
+        assert isinstance(duration_ms, float)
+        assert 49 < duration_ms < 51
 
     def test_statistics(self) -> None:
         config = ReviewConfig()
@@ -126,6 +128,35 @@ class TestPerformanceAnalyzer:
         analyzer = PerformanceAnalyzer(config)
         assert analyzer.get_statistics() == {}
 
+    def test_distinct_ids_are_not_collapsed(self) -> None:
+        """Same-named tests in different modules must stay separate.
+
+        The analyzer keys on the pytest node id, so ``test_a.py::test_slow``
+        and ``test_b.py::test_slow`` are two entries, not one.
+        """
+        config = ReviewConfig.from_dict(
+            {"analyzers": {"performance": {"enabled": True, "slow_threshold_ms": 100}}}
+        )
+        analyzer = PerformanceAnalyzer(config)
+
+        for node_id in ("test_a.py::test_slow", "test_b.py::test_slow"):
+            analyzer.on_test_start(node_id)
+            analyzer.on_test_end(node_id, passed=True, duration=0.2)
+
+        assert len(analyzer.get_results()) == 2
+        assert analyzer.get_statistics()["count"] == 2
+
+    def test_distinct_ids_across_classes_are_not_collapsed(self) -> None:
+        """Same-named methods in different classes must stay separate."""
+        config = ReviewConfig()
+        analyzer = PerformanceAnalyzer(config)
+
+        for node_id in ("t.py::TestA::test_x", "t.py::TestB::test_x"):
+            analyzer.on_test_start(node_id)
+            analyzer.on_test_end(node_id, passed=True, duration=0.01)
+
+        assert analyzer.get_statistics()["count"] == 2
+
 
 class TestPerformanceAnalyzerIntegration:
     """Integration tests using pytester."""
@@ -158,6 +189,33 @@ class TestPerformanceAnalyzerIntegration:
         assert "Mean:" in output
         assert "Median:" in output
         assert "P95:" in output
+
+    def test_duplicate_test_names_both_reported(self, pytester: pytest.Pytester) -> None:
+        """Two slow tests sharing a name in different files both get reported."""
+        pytester.makefile(
+            ".toml",
+            pyproject="""
+[tool.pytest-review.analyzers]
+performance = { enabled = true, slow_threshold_ms = 20 }
+""",
+        )
+        body = """
+            import time
+
+            def test_slow_operation_completes():
+                time.sleep(0.05)
+                assert 1 + 1 == 2
+        """
+        pytester.makepyfile(test_one=body, test_two=body)
+
+        result = pytester.runpytest(
+            "--review", "--review-only=performance", "--review-min-severity=info"
+        )
+        result.assert_outcomes(passed=2)
+        output = result.stdout.str()
+        assert "Tests timed: 2" in output
+        assert "test_one.py::test_slow_operation_completes" in output
+        assert "test_two.py::test_slow_operation_completes" in output
 
     def test_detects_slow_test_with_low_threshold(self, pytester: pytest.Pytester) -> None:
         # Create a pyproject.toml with low threshold

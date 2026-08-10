@@ -14,7 +14,8 @@ Test smell concepts are based on research by:
 from __future__ import annotations
 
 import ast
-from typing import TYPE_CHECKING, Iterator
+from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 from pytest_review.analyzers.base import AnalyzerResult, Issue, Severity, StaticAnalyzer
 

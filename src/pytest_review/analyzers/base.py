@@ -176,13 +176,22 @@ class DynamicAnalyzer(Analyzer):
         return AnalyzerResult(analyzer_name=self.name)
 
     @abstractmethod
-    def on_test_start(self, test_name: str) -> None:
-        """Called when a test starts executing."""
+    def on_test_start(self, test_id: str) -> None:
+        """Called when a test starts executing.
+
+        *test_id* is a unique identifier for the executing test; the plugin
+        passes pytest's node id (``path::Class::name[param]``).  Do not assume
+        it is a bare function name -- bare names are not unique across modules
+        and classes, so keying state on them loses results.
+        """
         ...
 
     @abstractmethod
-    def on_test_end(self, test_name: str, passed: bool, duration: float) -> None:
-        """Called when a test finishes executing."""
+    def on_test_end(self, test_id: str, passed: bool, duration: float) -> None:
+        """Called when a test finishes executing.
+
+        See :meth:`on_test_start` for the meaning of *test_id*.
+        """
         ...
 
     @abstractmethod

@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 # Enable pytester fixture for plugin testing
 pytest_plugins = ["pytester"]
 
 
-@pytest.fixture
-def sample_pyproject_config() -> dict:
+@pytest.fixture  # type: ignore[untyped-decorator]
+def sample_pyproject_config() -> dict[str, Any]:
     """Sample configuration dictionary."""
     return {
         "enabled": True,

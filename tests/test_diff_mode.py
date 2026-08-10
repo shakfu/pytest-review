@@ -20,7 +20,7 @@ class TestGetChangedFiles:
             def getoption(self, name: str, default: object = None) -> object:
                 return default
 
-        return ReviewPlugin(FakeConfig())  # type: ignore[arg-type]
+        return ReviewPlugin(FakeConfig())
 
     def test_auto_detects_main_branch(self) -> None:
         plugin = self._make_plugin()

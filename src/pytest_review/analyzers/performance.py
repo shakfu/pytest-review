@@ -29,15 +29,19 @@ class PerformanceAnalyzer(DynamicAnalyzer):
         self._test_durations: dict[str, float] = {}
         self._test_results: dict[str, AnalyzerResult] = {}
 
-    def on_test_start(self, test_name: str) -> None:
+    def on_test_start(self, test_id: str) -> None:
         """Called when a test starts executing."""
         # Duration tracking is handled by the collector
         pass
 
-    def on_test_end(self, test_name: str, passed: bool, duration: float) -> None:
-        """Called when a test finishes executing."""
+    def on_test_end(self, test_id: str, passed: bool, duration: float) -> None:
+        """Called when a test finishes executing.
+
+        Durations and issues are keyed on *test_id* (the pytest node id), so
+        identically named tests in different modules or classes stay distinct.
+        """
         duration_ms = duration * 1000
-        self._test_durations[test_name] = duration_ms
+        self._test_durations[test_id] = duration_ms
 
         result = AnalyzerResult(analyzer_name=self.name)
         result.metadata["duration_ms"] = duration_ms
@@ -49,7 +53,7 @@ class PerformanceAnalyzer(DynamicAnalyzer):
                     message=f"Test is very slow: {duration_ms:.0f}ms "
                     f"(threshold: {self._very_slow_threshold_ms:.0f}ms)",
                     severity=Severity.WARNING,
-                    test_name=test_name,
+                    test_name=test_id,
                     suggestion="Consider optimizing or mocking slow operations",
                 )
             )
@@ -60,13 +64,13 @@ class PerformanceAnalyzer(DynamicAnalyzer):
                     message=f"Test is slow: {duration_ms:.0f}ms "
                     f"(threshold: {self._slow_threshold_ms:.0f}ms)",
                     severity=Severity.INFO,
-                    test_name=test_name,
+                    test_name=test_id,
                     suggestion="Consider if this test can be optimized",
                 )
             )
 
         if result.issues:
-            self._test_results[test_name] = result
+            self._test_results[test_id] = result
 
     def get_results(self) -> list[AnalyzerResult]:
         """Get accumulated results after test run."""

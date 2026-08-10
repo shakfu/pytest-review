@@ -405,4 +405,6 @@ def test_metadata():
         result = analyzer.analyze(test_info)
 
         assert "pattern_issues" in result.metadata
-        assert result.metadata["pattern_issues"] >= 1
+        pattern_issues = result.metadata["pattern_issues"]
+        assert isinstance(pattern_issues, int)
+        assert pattern_issues >= 1

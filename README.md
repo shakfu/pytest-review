@@ -224,7 +224,7 @@ Suggestions for improvement. **Hidden by default** -- run with `--review-min-sev
 
 ### Incremental Caching
 
-Static analysis results are cached per file, keyed on a SHA-256 content hash and a hash of the active analyzer configuration. On subsequent runs, unchanged files are skipped entirely. The cache is stored in pytest's `.pytest_cache/` directory and is invalidated automatically when file contents or config change.
+Static analysis results are cached per file, keyed on the file's path (relative to the pytest root), a SHA-256 hash of its contents, and a hash of the active analyzer configuration. On subsequent runs, unchanged files are skipped entirely. The cache is stored in pytest's `.pytest_cache/` directory and is invalidated automatically when file contents or config change. Including the path in the key keeps files with byte-identical contents in separate cache entries.
 
 Disable caching with `--review-no-cache`. Clear the cache with pytest's built-in `--cache-clear`.
 

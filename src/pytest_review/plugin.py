@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import fnmatch
 import hashlib
 import importlib.metadata
@@ -51,6 +52,20 @@ if TYPE_CHECKING:
 _review_key = pytest.StashKey["ReviewPlugin"]()
 
 
+def _base_test_name(item: Function) -> str:
+    """Return the AST-level function name for a pytest item.
+
+    Parametrized items are named ``test_foo[case0]`` while the underlying
+    ``ast.FunctionDef`` is named ``test_foo``.  ``Function.originalname`` holds
+    the undecorated name; the bracket-stripping fallback covers item types that
+    do not define it.
+    """
+    original = getattr(item, "originalname", None)
+    if original:
+        return str(original)
+    return str(item.name).split("[", 1)[0]
+
+
 def _find_parent_class(
     tree: ast.Module, target: ast.FunctionDef | ast.AsyncFunctionDef
 ) -> ast.ClassDef | None:
@@ -86,12 +101,15 @@ def _discover_entry_point_analyzers() -> dict[str, type[StaticAnalyzer | Dynamic
         my-analyzer = "my_package:MyAnalyzer"
     """
     discovered: dict[str, type[StaticAnalyzer | DynamicAnalyzer]] = {}
+    # Typed as Any: the return type of entry_points() differs between the 3.9
+    # dict-like mapping and the 3.10+ selectable interface.
+    eps: list[Any]
     try:
-        eps = importlib.metadata.entry_points(group="pytest_review")
+        eps = list(importlib.metadata.entry_points(group="pytest_review"))  # type: ignore[call-arg]
     except TypeError:
         # Python 3.9 fallback: entry_points() returns a dict-like object
-        all_eps = importlib.metadata.entry_points()
-        eps = all_eps.get("pytest_review", [])  # type: ignore[union-attr]
+        all_eps: Any = importlib.metadata.entry_points()
+        eps = list(all_eps.get("pytest_review", []))
     for ep in eps:
         try:
             cls = ep.load()
@@ -116,7 +134,7 @@ def _get_static_analyzer_classes() -> dict[str, type[StaticAnalyzer]]:
         classes = dict(_BUILTIN_STATIC_ANALYZER_CLASSES)
         for name, cls in _discover_entry_point_analyzers().items():
             if issubclass(cls, StaticAnalyzer):
-                classes[name] = cls  # type: ignore[assignment]
+                classes[name] = cls
         _static_analyzer_classes_cache = classes
     return _static_analyzer_classes_cache
 
@@ -350,7 +368,7 @@ class ReviewPlugin:
             source, tree = self._get_ast(file_path)
 
             # Find the test function in the AST
-            test_name = item.name
+            test_name = _base_test_name(item)
             class_name = item.cls.__name__ if item.cls else None
 
             for node in ast.walk(tree):
@@ -469,6 +487,26 @@ class ReviewPlugin:
         raw = json.dumps(key_data, sort_keys=True)
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
+    def _cache_key(self, file_path: Path, config_hash: str) -> str:
+        """Build the incremental-cache key for *file_path*.
+
+        The key combines the file's identity, its contents and the analyzer
+        configuration.  The path component is essential: without it two files
+        with byte-identical contents share an entry and each can serve the
+        other's cached ``Issue.file_path`` values.  The path is normalized
+        relative to ``rootpath`` so the cache survives moving the checkout,
+        and hashed so the key stays a safe single path segment.
+        """
+        try:
+            rootpath = Path(self.pytest_config.rootpath)
+            path_key = file_path.resolve().relative_to(rootpath.resolve()).as_posix()
+        except (ValueError, OSError, AttributeError):
+            # Outside rootpath (or rootpath unavailable) -- fall back to absolute.
+            path_key = file_path.as_posix()
+        path_hash = hashlib.sha256(path_key.encode()).hexdigest()[:16]
+        file_hash = _compute_file_hash(file_path)
+        return f"review/v2/{path_hash}_{file_hash}_{config_hash}"
+
     def _should_use_parallel(self, num_files: int, total_tests: int) -> bool:
         """Decide whether to dispatch static analysis to a process pool."""
         if self._workers == 1:
@@ -520,10 +558,9 @@ class ReviewPlugin:
                     for file_path, test_infos in files_to_analyze.items()
                 }
                 for future in futures:
-                    try:
+                    # Skip failed files, consistent with collect_test_info
+                    with contextlib.suppress(Exception):
                         results.extend(future.result())
-                    except Exception:
-                        pass  # skip failed files, consistent with collect_test_info
         except (OSError, RuntimeError):
             # Process pool unavailable -- fall back to sequential.
             return self._run_sequential_analysis(files_to_analyze)
@@ -552,15 +589,15 @@ class ReviewPlugin:
             tests_by_file.setdefault(test_info.file_path, []).append(test_info)
 
         # Incremental cache: look up previously computed results per file
-        cache = self.pytest_config.cache if self._use_cache else None
+        # ``config.cache`` only exists while the cacheprovider plugin is active;
+        # it is absent under ``-p no:cacheprovider``.
+        cache = getattr(self.pytest_config, "cache", None) if self._use_cache else None
         config_hash = self._get_config_hash(analyzer_names) if cache else ""
         files_to_analyze: dict[Path, list[TestItemInfo]] = {}
 
         for file_path, test_infos in tests_by_file.items():
             if cache is not None:
-                file_hash = _compute_file_hash(file_path)
-                cache_key = f"review/v1/{file_hash}_{config_hash}"
-                cached = cache.get(cache_key, None)
+                cached = cache.get(self._cache_key(file_path, config_hash), None)
                 if cached is not None:
                     self._results.extend(_deserialize_results(cached))
                     continue
@@ -591,10 +628,8 @@ class ReviewPlugin:
                     if fp in results_by_file:
                         results_by_file[fp].append(result)
             for file_path in files_to_analyze:
-                file_hash = _compute_file_hash(file_path)
-                cache_key = f"review/v1/{file_hash}_{config_hash}"
                 cache.set(
-                    cache_key,
+                    self._cache_key(file_path, config_hash),
                     _serialize_results(results_by_file.get(file_path, [])),
                 )
 
@@ -613,17 +648,22 @@ class ReviewPlugin:
                     self._results.append(result)
 
     def on_test_start(self, node_id: str, test_name: str) -> None:
-        """Called when a test starts executing."""
+        """Called when a test starts executing.
+
+        Dynamic analyzers are handed the *node id* rather than ``item.name``:
+        the bare name is not unique -- identically named tests in different
+        modules or classes collide and overwrite each other's timings.
+        """
         self._test_start_times[node_id] = time.perf_counter()
         for analyzer in self._dynamic_analyzers:
-            analyzer.on_test_start(test_name)
+            analyzer.on_test_start(node_id)
 
     def on_test_end(self, node_id: str, test_name: str, passed: bool) -> None:
         """Called when a test finishes executing."""
         start_time = self._test_start_times.pop(node_id, time.perf_counter())
         duration = time.perf_counter() - start_time
         for analyzer in self._dynamic_analyzers:
-            analyzer.on_test_end(test_name, passed, duration)
+            analyzer.on_test_end(node_id, passed, duration)
 
     def get_results(self) -> list[AnalyzerResult]:
         """Get all analysis results."""
@@ -659,12 +699,12 @@ class ReviewPlugin:
         if self._score_breakdown is None:
             # Collect category mappings from analyzers that declare one
             extra_categories: dict[str, str] = {}
-            for a in self._static_analyzers:
-                if a.category:
-                    extra_categories[a.name] = a.category
-            for a in self._dynamic_analyzers:
-                if a.category:
-                    extra_categories[a.name] = a.category
+            for static_analyzer in self._static_analyzers:
+                if static_analyzer.category:
+                    extra_categories[static_analyzer.name] = static_analyzer.category
+            for dynamic_analyzer in self._dynamic_analyzers:
+                if dynamic_analyzer.category:
+                    extra_categories[dynamic_analyzer.name] = dynamic_analyzer.category
             engine = ScoringEngine(extra_categories=extra_categories or None)
             breakdown = engine.calculate_score(self._results, len(self._test_infos))
             self._score_breakdown = breakdown.to_dict()
@@ -707,6 +747,25 @@ def _parse_severity(name: str) -> Severity:
     raise ValueError(
         f"Invalid severity {name!r}; expected one of info, warning, error"
     )
+
+
+def _resolve_strict(config: Config, plugin: ReviewPlugin) -> bool:
+    """Effective strict mode: ``--review-strict`` ORed with the config setting.
+
+    The CLI flag is a pure opt-in (default ``False``), so it can only turn
+    strict mode on; ``strict = true`` in ``[tool.pytest-review]`` must be
+    honoured on its own.
+    """
+    cli_strict = bool(config.getoption("review_strict", default=False))
+    return cli_strict or bool(plugin.review_config.strict)
+
+
+def _resolve_min_score(config: Config, plugin: ReviewPlugin) -> int:
+    """Effective minimum score: an explicit CLI value overrides the config."""
+    cli_min_score = config.getoption("review_min_score", default=0) or 0
+    if cli_min_score:
+        return int(cli_min_score)
+    return int(plugin.review_config.min_score or 0)
 
 
 def pytest_addoption(parser: Parser) -> None:
@@ -830,6 +889,11 @@ def pytest_collection_modifyitems(
     if diff_base is not None:
         changed_files = plugin._get_changed_files(diff_base)
 
+    # Every parametrized case of a test maps to the same source function, so
+    # static analysis must run once per function -- otherwise identical issues
+    # are reported once per case and score penalties are multiplied.
+    seen: set[tuple[str, str | None, str]] = set()
+
     for item in items:
         if isinstance(item, pytest.Function):
             # Skip tests marked with review_skip
@@ -847,6 +911,13 @@ def pytest_collection_modifyitems(
                 and Path(item.fspath).resolve() not in changed_files
             ):
                 continue
+
+            # Skip source functions already collected (parametrized cases)
+            class_name = item.cls.__name__ if item.cls else None
+            key = (str(item.fspath), class_name, _base_test_name(item))
+            if key in seen:
+                continue
+            seen.add(key)
 
             test_info = plugin.collect_test_info(item)
             if test_info:
@@ -892,8 +963,8 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
 
     # Check strict mode and min score, set exit status if needed
     config = session.config
-    strict = config.getoption("review_strict", default=False)
-    min_score = config.getoption("review_min_score", default=0)
+    strict = _resolve_strict(config, plugin)
+    min_score = _resolve_min_score(config, plugin)
 
     if strict and plugin.has_errors():
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
@@ -977,12 +1048,12 @@ def pytest_terminal_summary(
         reporter.write_footer()
 
     # Display strict mode and min score failure messages
-    strict = config.getoption("review_strict", default=False)
-    min_score = config.getoption("review_min_score", default=0)
+    strict = _resolve_strict(config, plugin)
+    min_score = _resolve_min_score(config, plugin)
 
     if strict and plugin.has_errors():
         terminalreporter._tw.line(
-            "\nFAILED: Quality errors found (--review-strict enabled)",
+            "\nFAILED: Quality errors found (strict mode enabled)",
             red=True,
             bold=True,
         )

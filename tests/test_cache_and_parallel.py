@@ -189,6 +189,66 @@ class TestIncrementalCache:
         # The trivial assertion issue should no longer appear
         assert "Trivial assertion" not in result2.stdout.str()
 
+    def test_identical_files_keep_separate_cache_entries(
+        self, pytester: pytest.Pytester
+    ) -> None:
+        """Files with identical contents must not share a cache entry.
+
+        The key must include the file path; otherwise the second run serves one
+        file's cached issues for the other and reports the wrong path.
+        """
+        body = """
+            def test_x():
+                assert True
+        """
+        pytester.makepyfile(test_alpha=body, test_beta=body)
+
+        first = pytester.runpytest("--review")
+        first.assert_outcomes(passed=2)
+
+        second = pytester.runpytest("--review")
+        second.assert_outcomes(passed=2)
+
+        for result in (first, second):
+            output = result.stdout.str()
+            assert "test_alpha.py" in output
+            assert "test_beta.py" in output
+            # Exactly one trivial-assertion issue per file, not two for one file
+            assert output.count("test_alpha.py:2 [test_x] Trivial assertion") == 1
+            assert output.count("test_beta.py:2 [test_x] Trivial assertion") == 1
+
+    def test_cached_run_matches_uncached_run(self, pytester: pytest.Pytester) -> None:
+        """Identical-content files score the same with and without the cache."""
+        body = """
+            def test_x():
+                assert True
+        """
+        pytester.makepyfile(test_alpha=body, test_beta=body)
+
+        def extract_score(out: str) -> str:
+            for line in out.splitlines():
+                if "Overall Score:" in line:
+                    return line.strip()
+            raise AssertionError("Overall Score line missing from output")
+
+        uncached = pytester.runpytest("--review", "--review-no-cache")
+        pytester.runpytest("--review")  # populate cache
+        cached = pytester.runpytest("--review")
+
+        assert extract_score(cached.stdout.str()) == extract_score(uncached.stdout.str())
+
+    def test_runs_without_cacheprovider_plugin(self, pytester: pytest.Pytester) -> None:
+        """``-p no:cacheprovider`` removes ``config.cache``; review must not crash."""
+        pytester.makepyfile("""
+            def test_1():
+                assert True
+        """)
+        result = pytester.runpytest("--review", "-p", "no:cacheprovider")
+        result.assert_outcomes(passed=1)
+        output = result.stdout.str()
+        assert "AttributeError" not in output
+        assert "Trivial assertion" in output
+
     def test_no_cache_flag_disables_caching(self, pytester: pytest.Pytester) -> None:
         """--review-no-cache should still produce correct results."""
         pytester.makepyfile("""
