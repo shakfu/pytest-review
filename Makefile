@@ -57,14 +57,28 @@ import json; \
 data = json.load(open('/tmp/review.json')); \
 rules = {i['rule'] for i in data['issues']}; \
 expected = { \
-    'assertions.missing', 'assertions.trivial', \
-    'naming.non_descriptive', 'naming.too_short', 'naming.not_snake_case', \
-    'complexity.too_many_statements', 'complexity.deep_nesting', 'complexity.high_cyclomatic', \
-    'patterns.bare_except', 'patterns.sleep_in_test', 'patterns.print_statement', \
-    'patterns.os_system', 'patterns.is_literal', \
-    'isolation.global_modification', 'isolation.class_attr_modification', \
-    'smells.assertion_roulette', 'smells.duplicate_assert', 'smells.ignored_test', \
-    'smells.magic_number', 'smells.eager_test', \
+    'assertions.mock_tautology', \
+    'smells.vacuous_loop', \
+    'assertions.uncalled_assertion', \
+    'assertions.always_true', \
+    'assertions.low_ratio', \
+    'assertions.missing', \
+    'assertions.trivial', \
+    'isolation.bare_patch', \
+    'isolation.class_attr_modification', \
+    'isolation.env_mutation', \
+    'isolation.global_modification', \
+    'isolation.process_mutation', \
+    'patterns.hardcoded_path', \
+    'patterns.os_system', \
+    'patterns.sleep_in_test', \
+    'patterns.slow_call', \
+    'patterns.subprocess_no_check', \
+    'smells.duplicate_assert', \
+    'smells.early_return', \
+    'smells.ignored_test', \
+    'smells.swallowed_assertion', \
+    'smells.try_except_in_test', \
 }; \
 missing = expected - rules; \
 extra = rules - expected - {'naming.unclear_abbreviation'}; \

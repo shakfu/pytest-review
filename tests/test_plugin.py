@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 
@@ -82,7 +84,8 @@ class TestParametrizedTests:
         result.assert_outcomes(passed=3)
         output = result.stdout.str()
         assert "Trivial assertion" in output
-        assert "Non-descriptive test name: 'test_x'" in output
+        # reported once per function, not once per parametrized case
+        assert output.count("Trivial assertion") == 1
 
     def test_parametrized_cases_counted_once(self, pytester: pytest.Pytester) -> None:
         """All cases share one source function, so it is analyzed once."""
@@ -142,6 +145,15 @@ class TestConfigEnforcement:
             pass
     """
 
+    # An empty test forfeits everything: a one-test suite of them scores exactly
+    # 0, so no positive threshold can clear it. Where a test needs a score that
+    # sits *between* two thresholds, use a merely-poor test instead of a
+    # worthless one.
+    _MEDIOCRE_TEST = """
+        def test_x():
+            assert True
+    """
+
     def test_config_strict_fails_run(self, pytester: pytest.Pytester) -> None:
         """strict = true in pyproject.toml fails the run without any CLI flag."""
         pytester.makepyfile(self._BAD_TEST)
@@ -178,8 +190,13 @@ class TestConfigEnforcement:
         assert "below minimum 95" in result.stdout.str()
 
     def test_cli_min_score_overrides_config(self, pytester: pytest.Pytester) -> None:
-        """An explicit --review-min-score wins over the config value."""
-        pytester.makepyfile(self._BAD_TEST)
+        """An explicit --review-min-score wins over the config value.
+
+        The module scores between the two thresholds, so the run's outcome
+        actually distinguishes them: the config value would fail it and the CLI
+        value passes it.
+        """
+        pytester.makepyfile(self._MEDIOCRE_TEST)
         pytester.makepyprojecttoml("""
             [tool.pytest-review]
             min_score = 95
@@ -187,6 +204,30 @@ class TestConfigEnforcement:
         result = pytester.runpytest("--review", "--review-no-cache", "--review-min-score=1")
         assert result.ret == pytest.ExitCode.OK
         assert "below minimum" not in result.stdout.str()
+
+    def test_bundled_bad_example_fails_min_score_gate(
+        self, pytester: pytest.Pytester, restore_environ: None
+    ) -> None:
+        """``examples/bad_tests.py`` must fail the gate ``make example-min-score`` uses.
+
+        That Makefile target exists to demonstrate ``--review-min-score=70``
+        rejecting a bad suite. Unit tests on the scoring engine did not catch a
+        regression that made the bundled example score 92/A, because nothing
+        asserted what a realistically bad module actually scores end to end.
+        """
+        example = Path(__file__).parent.parent / "examples" / "bad_tests.py"
+        if not example.is_file():
+            pytest.skip("examples/bad_tests.py not available (installed package)")
+        pytester.makepyfile(bad_tests=example.read_text())
+
+        # Passed by path: "bad_tests.py" matches no default ``python_files`` pattern,
+        # exactly as ``make example-min-score`` invokes it.
+        result = pytester.runpytest(
+            "bad_tests.py", "--review", "--review-no-cache", "--review-min-score=70"
+        )
+
+        assert result.ret == pytest.ExitCode.TESTS_FAILED
+        assert "below minimum 70" in result.stdout.str()
 
     def test_cli_strict_works_without_config(self, pytester: pytest.Pytester) -> None:
         """--review-strict still fails the run on its own."""
@@ -212,16 +253,27 @@ class TestPluginOutput:
         assert "No quality issues found" in result.stdout.str()
         assert "Quality: EXCELLENT" in result.stdout.str()
 
-    def test_shows_overall_score(self, pytester: pytest.Pytester) -> None:
-        """Shows overall score in output."""
+    def test_score_is_hidden_unless_a_threshold_is_in_force(
+        self, pytester: pytest.Pytester
+    ) -> None:
+        """The grade is a gate input, not the headline.
+
+        This is a defect finder: the findings are what a developer acts on.
+        Leading with a grade invites tuning the number instead of fixing the
+        tests, so the score appears only when --review-min-score is set.
+        """
         pytester.makepyfile("""
             def test_calculation_returns_expected_result():
                 result = 1 + 1
                 assert result == 2
         """)
-        result = pytester.runpytest("--review")
-        assert "Overall Score:" in result.stdout.str()
-        assert "/100" in result.stdout.str()
+
+        default = pytester.runpytest("--review").stdout.str()
+        assert "Overall Score:" not in default
+
+        gated = pytester.runpytest("--review", "--review-min-score=1").stdout.str()
+        assert "Overall Score:" in gated
+        assert "/100" in gated
 
     def test_detects_quality_issues(self, pytester: pytest.Pytester) -> None:
         """Shows issues when tests have quality problems."""
@@ -238,37 +290,6 @@ class TestPluginOutput:
 
 class TestPluginMinSeverity:
     """Test --review-min-severity filtering behavior."""
-
-    def test_default_hides_info_issues(self, pytester: pytest.Pytester) -> None:
-        """By default (min_severity=warning), INFO issues are hidden."""
-        # ``is not None`` triggers assertions.low_value, which is INFO.
-        pytester.makepyfile("""
-            def test_returns_something_meaningful_here():
-                value = compute()
-                assert value is not None
-
-            def compute():
-                return 42
-        """)
-        result = pytester.runpytest("--review")
-        output = result.stdout.str()
-        # INFO rule should NOT appear
-        assert "assertions.low_value" not in output
-        assert "Low-value assertion" not in output
-
-    def test_explicit_info_shows_info_issues(self, pytester: pytest.Pytester) -> None:
-        """--review-min-severity=info restores INFO visibility."""
-        pytester.makepyfile("""
-            def test_returns_something_meaningful_here():
-                value = compute()
-                assert value is not None
-
-            def compute():
-                return 42
-        """)
-        result = pytester.runpytest("--review", "--review-min-severity=info")
-        output = result.stdout.str()
-        assert "assertions.low_value" in output or "Low-value assertion" in output
 
     def test_error_only_hides_warnings(self, pytester: pytest.Pytester) -> None:
         """--review-min-severity=error hides WARNING-level issues."""
@@ -304,8 +325,12 @@ class TestPluginMinSeverity:
             def compute():
                 return 42
         """)
-        shown = pytester.runpytest("--review", "--review-min-severity=info").stdout.str()
-        hidden = pytester.runpytest("--review", "--review-min-severity=error").stdout.str()
+        shown = pytester.runpytest(
+            "--review", "--review-min-severity=info", "--review-min-score=1"
+        ).stdout.str()
+        hidden = pytester.runpytest(
+            "--review", "--review-min-severity=error", "--review-min-score=1"
+        ).stdout.str()
 
         def extract_score(out: str) -> str:
             for line in out.splitlines():
@@ -315,38 +340,44 @@ class TestPluginMinSeverity:
 
         assert extract_score(shown) == extract_score(hidden)
 
-    def test_config_file_sets_min_severity(self, pytester: pytest.Pytester) -> None:
-        """[tool.pytest-review] min_severity in pyproject.toml is honored."""
-        pytester.makepyfile("""
-            def test_returns_something_meaningful_here():
-                value = compute()
-                assert value is not None
 
-            def compute():
-                return 42
+class TestUnknownAnalyzerWarning:
+    """An analyzer name that matches nothing must not fail silently.
+
+    ``--review-only=naming`` against a build with no ``naming`` analyzer selects
+    nothing, analyzes nothing, and reports success -- so a CI job pinned to a
+    removed analyzer would pass while checking nothing at all.
+    """
+
+    def test_warns_on_unknown_review_only(self, pytester: pytest.Pytester) -> None:
+        pytester.makepyfile("""
+            def test_adds_two_numbers():
+                assert 1 + 1 == 2
+        """)
+        with pytest.warns(UserWarning, match="unknown analyzer"):
+            pytester.runpytest("--review", "--review-no-cache", "--review-only=naming")
+
+    def test_warns_on_unknown_analyzer_in_config(self, pytester: pytest.Pytester) -> None:
+        pytester.makepyfile("""
+            def test_adds_two_numbers():
+                assert 1 + 1 == 2
         """)
         pytester.makepyprojecttoml("""
-            [tool.pytest-review]
-            min_severity = "info"
+            [tool.pytest-review.analyzers]
+            naming = { enabled = true }
         """)
-        result = pytester.runpytest("--review")
-        output = result.stdout.str()
-        assert "assertions.low_value" in output or "Low-value assertion" in output
+        with pytest.warns(UserWarning, match="unknown analyzer"):
+            pytester.runpytest("--review", "--review-no-cache")
 
-    def test_cli_overrides_config(self, pytester: pytest.Pytester) -> None:
-        """--review-min-severity on the CLI overrides pyproject.toml."""
+    def test_no_warning_for_known_analyzers(self, pytester: pytest.Pytester) -> None:
         pytester.makepyfile("""
-            def test_returns_something_meaningful_here():
-                value = compute()
-                assert value is not None
+            def test_adds_two_numbers():
+                assert 1 + 1 == 2
+        """)
+        import warnings as _warnings
 
-            def compute():
-                return 42
-        """)
-        pytester.makepyprojecttoml("""
-            [tool.pytest-review]
-            min_severity = "info"
-        """)
-        result = pytester.runpytest("--review", "--review-min-severity=error")
-        output = result.stdout.str()
-        assert "assertions.low_value" not in output
+        with _warnings.catch_warnings(record=True) as caught:
+            _warnings.simplefilter("always")
+            pytester.runpytest("--review", "--review-no-cache", "--review-only=assertions")
+
+        assert not [w for w in caught if "unknown analyzer" in str(w.message)]

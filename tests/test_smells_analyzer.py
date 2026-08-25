@@ -28,50 +28,6 @@ def make_test_info(source: str, name: str = "test_example") -> TestItemInfo:
 
 
 class TestSmellsAnalyzer:
-    def test_detects_assertion_roulette(self) -> None:
-        """Multiple assertions without messages is a smell."""
-        source = """
-def test_example():
-    assert 1 == 1
-    assert 2 == 2
-    assert 3 == 3
-"""
-        analyzer = SmellsAnalyzer(ReviewConfig())
-        test_info = make_test_info(source)
-        result = analyzer.analyze(test_info)
-
-        assert result.has_warnings
-        rules = [issue.rule for issue in result.issues]
-        assert "smells.assertion_roulette" in rules
-
-    def test_no_roulette_with_messages(self) -> None:
-        """Assertions with messages are fine."""
-        source = """
-def test_example():
-    assert 1 == 1, "one equals one"
-    assert 2 == 2, "two equals two"
-    assert 3 == 3, "three equals three"
-"""
-        analyzer = SmellsAnalyzer(ReviewConfig())
-        test_info = make_test_info(source)
-        result = analyzer.analyze(test_info)
-
-        rules = [issue.rule for issue in result.issues]
-        assert "smells.assertion_roulette" not in rules
-
-    def test_no_roulette_single_assertion(self) -> None:
-        """Single assertion without message is fine."""
-        source = """
-def test_example():
-    assert 1 == 1
-"""
-        analyzer = SmellsAnalyzer(ReviewConfig())
-        test_info = make_test_info(source)
-        result = analyzer.analyze(test_info)
-
-        rules = [issue.rule for issue in result.issues]
-        assert "smells.assertion_roulette" not in rules
-
     def test_detects_duplicate_assertions(self) -> None:
         """Duplicate assertions are a smell."""
         source = """
@@ -88,6 +44,65 @@ def test_example():
         rules = [issue.rule for issue in result.issues]
         assert "smells.duplicate_assert" in rules
 
+    def _rules(self, source: str) -> list[str]:
+        analyzer = SmellsAnalyzer(ReviewConfig())
+        return [i.rule for i in analyzer.analyze(make_test_info(source)).issues]
+
+    def test_detects_vacuous_loop(self) -> None:
+        """Every assertion inside a loop -> the test passes on an empty iterable."""
+        source = """
+def test_example(items):
+    for item in items:
+        assert item.ok
+"""
+        assert "smells.vacuous_loop" in self._rules(source)
+
+    def test_loop_over_nonempty_literal_is_not_vacuous(self) -> None:
+        source = """
+def test_example():
+    for value in [1, 2, 3]:
+        assert value > 0
+"""
+        assert "smells.vacuous_loop" not in self._rules(source)
+
+    def test_loop_over_positive_range_is_not_vacuous(self) -> None:
+        source = """
+def test_example():
+    for i in range(3):
+        assert i >= 0
+"""
+        assert "smells.vacuous_loop" not in self._rules(source)
+
+    def test_unconditional_assertion_makes_loop_safe(self) -> None:
+        """One assertion outside the loop means the test cannot pass vacuously."""
+        source = """
+def test_example(items):
+    assert items
+    for item in items:
+        assert item.ok
+"""
+        assert "smells.vacuous_loop" not in self._rules(source)
+
+    def test_no_duplicate_for_invariant_across_a_state_change(self) -> None:
+        """Re-asserting an expression after a mutation is correct, not duplication.
+
+        This is the standard way to check that an operation had an effect. The
+        rule keys on repeats within an unbroken run of assertions, so any
+        intervening statement starts a new run.
+        """
+        source = """
+def test_example():
+    result = make()
+    assert result.has_errors is False
+    result.add_issue(err)
+    assert result.has_errors is False
+"""
+        analyzer = SmellsAnalyzer(ReviewConfig())
+        result = analyzer.analyze(make_test_info(source))
+
+        rules = [issue.rule for issue in result.issues]
+        assert "smells.duplicate_assert" not in rules
+
     def test_no_duplicate_for_similar_assertions(self) -> None:
         """Similar but different assertions are fine."""
         source = """
@@ -102,34 +117,6 @@ def test_example():
 
         rules = [issue.rule for issue in result.issues]
         assert "smells.duplicate_assert" not in rules
-
-    def test_detects_magic_numbers(self) -> None:
-        """Magic numbers in assertions are a smell."""
-        source = """
-def test_example():
-    assert result == 42
-"""
-        analyzer = SmellsAnalyzer(ReviewConfig())
-        test_info = make_test_info(source)
-        result = analyzer.analyze(test_info)
-
-        rules = [issue.rule for issue in result.issues]
-        assert "smells.magic_number" in rules
-
-    def test_allows_common_numbers(self) -> None:
-        """Common numbers like 0, 1, 2 are allowed."""
-        source = """
-def test_example():
-    assert result == 0
-    assert count == 1
-    assert value == 2
-"""
-        analyzer = SmellsAnalyzer(ReviewConfig())
-        test_info = make_test_info(source)
-        result = analyzer.analyze(test_info)
-
-        rules = [issue.rule for issue in result.issues]
-        assert "smells.magic_number" not in rules
 
     def test_detects_skip_decorator(self) -> None:
         """Skipped tests are flagged."""
@@ -205,12 +192,12 @@ def test_example():
         skip_issues = [i for i in result.issues if i.rule == "smells.ignored_test"]
         assert any("pytest.xfail" in issue.message for issue in skip_issues)
 
-    def test_detects_conditional_runtime_skip(self) -> None:
-        """``pytest.skip(...)`` nested inside a branch is still flagged."""
+    def test_guarded_raise_skip_test_not_flagged(self) -> None:
+        """``raise SkipTest`` inside an ``if`` is also a gate, not a dead test."""
         source = """
 def test_example():
     if sys.platform == "win32":
-        pytest.skip("unix-only")
+        raise SkipTest("unix-only")
     assert compute() == 42
 """
         analyzer = SmellsAnalyzer(ReviewConfig())
@@ -218,7 +205,7 @@ def test_example():
         result = analyzer.analyze(test_info)
 
         skip_issues = [i for i in result.issues if i.rule == "smells.ignored_test"]
-        assert len(skip_issues) >= 1
+        assert len(skip_issues) == 0
 
     def test_does_not_flag_importorskip(self) -> None:
         """``pytest.importorskip(...)`` is not flagged (legitimate gate)."""
@@ -290,13 +277,30 @@ def test_example():
         skip_issues = [i for i in result.issues if i.rule == "smells.ignored_test"]
         assert len(skip_issues) >= 1
 
-    def test_detects_early_return(self) -> None:
-        """Early ``return`` in a test body is flagged."""
+    def test_does_not_flag_guard_return(self) -> None:
+        """A ``return`` that is the sole body of an ``if`` is a toggle, not a bypass."""
         source = """
 def test_example():
     if flaky:
         return
     assert compute() == 42
+"""
+        analyzer = SmellsAnalyzer(ReviewConfig())
+        test_info = make_test_info(source)
+        result = analyzer.analyze(test_info)
+
+        early_return = [i for i in result.issues if i.rule == "smells.early_return"]
+        assert len(early_return) == 0
+
+    def test_detects_unconditional_early_return(self) -> None:
+        """An unconditional mid-body ``return`` bypasses assertions."""
+        source = """
+def test_example():
+    result = compute()
+    if result > 0:
+        assert result == 42
+    return
+    assert result == 0
 """
         analyzer = SmellsAnalyzer(ReviewConfig())
         test_info = make_test_info(source)
@@ -431,107 +435,6 @@ def test_example():
         swallowed = [i for i in result.issues if i.rule == "smells.swallowed_assertion"]
         assert len(swallowed) == 0
 
-    def test_detects_eager_test(self) -> None:
-        """Tests calling many distinct methods are flagged."""
-        source = """
-def test_example():
-    result1 = foo()
-    result2 = bar()
-    result3 = baz()
-    result4 = qux()
-    assert result1 == 1
-    assert result2 == 2
-    assert result3 == 3
-    assert result4 == 4
-"""
-        analyzer = SmellsAnalyzer(ReviewConfig())
-        test_info = make_test_info(source)
-        result = analyzer.analyze(test_info)
-
-        rules = [issue.rule for issue in result.issues]
-        assert "smells.eager_test" in rules
-
-    def test_no_eager_for_single_method(self) -> None:
-        """Tests focusing on one method are fine."""
-        source = """
-def test_example():
-    result1 = calculate(1)
-    result2 = calculate(2)
-    assert result1 == 1
-    assert result2 == 4
-"""
-        analyzer = SmellsAnalyzer(ReviewConfig())
-        test_info = make_test_info(source)
-        result = analyzer.analyze(test_info)
-
-        rules = [issue.rule for issue in result.issues]
-        assert "smells.eager_test" not in rules
-
-    def test_detects_conditional_logic(self) -> None:
-        source = """
-def test_example():
-    result = compute()
-    if result > 0:
-        assert result == 42
-    else:
-        assert result == 0
-"""
-        analyzer = SmellsAnalyzer(ReviewConfig())
-        test_info = make_test_info(source)
-        result = analyzer.analyze(test_info)
-
-        rules = [issue.rule for issue in result.issues]
-        assert "smells.conditional_test" in rules
-
-    def test_no_conditional_without_if(self) -> None:
-        source = """
-def test_example():
-    result = compute()
-    assert result == 42
-"""
-        analyzer = SmellsAnalyzer(ReviewConfig())
-        test_info = make_test_info(source)
-        result = analyzer.analyze(test_info)
-
-        rules = [issue.rule for issue in result.issues]
-        assert "smells.conditional_test" not in rules
-
-    def test_detects_too_many_fixtures(self) -> None:
-        source = """
-def test_example(db, cache, api_client, logger, config, mailer):
-    assert db is not None
-"""
-        analyzer = SmellsAnalyzer(ReviewConfig())
-        test_info = make_test_info(source)
-        result = analyzer.analyze(test_info)
-
-        rules = [issue.rule for issue in result.issues]
-        assert "smells.too_many_fixtures" in rules
-
-    def test_no_fixture_overuse_with_few_params(self) -> None:
-        source = """
-def test_example(db, cache):
-    assert db is not None
-"""
-        analyzer = SmellsAnalyzer(ReviewConfig())
-        test_info = make_test_info(source)
-        result = analyzer.analyze(test_info)
-
-        rules = [issue.rule for issue in result.issues]
-        assert "smells.too_many_fixtures" not in rules
-
-    def test_fixture_overuse_excludes_self(self) -> None:
-        source = """
-def test_example(self, db, cache, api, logger, config):
-    assert db is not None
-"""
-        analyzer = SmellsAnalyzer(ReviewConfig())
-        test_info = make_test_info(source)
-        result = analyzer.analyze(test_info)
-
-        rules = [issue.rule for issue in result.issues]
-        assert "smells.too_many_fixtures" not in rules
-
     def test_detects_try_except_in_test(self) -> None:
         source = """
 def test_example():
@@ -553,6 +456,23 @@ def test_example():
 def test_example():
     result = safe_operation()
     assert result == 42
+"""
+        analyzer = SmellsAnalyzer(ReviewConfig())
+        test_info = make_test_info(source)
+        result = analyzer.analyze(test_info)
+
+        rules = [issue.rule for issue in result.issues]
+        assert "smells.try_except_in_test" not in rules
+
+    def test_no_try_except_for_finally_block(self) -> None:
+        """``try/finally`` has no handlers and cannot mask failures."""
+        source = """
+def test_example():
+    try:
+        write_output()
+    finally:
+        cleanup()
+    assert True
 """
         analyzer = SmellsAnalyzer(ReviewConfig())
         test_info = make_test_info(source)
@@ -584,6 +504,8 @@ class TestSmellsAnalyzerIntegration:
                 assert x == 1
                 assert x + 1 == 2
                 assert x + 2 == 3
+                assert x + 3 == 4
+                assert x + 4 == 5
         """)
 
         result = pytester.runpytest("--review", "--review-only=smells")

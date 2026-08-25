@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import dataclasses
 import fnmatch
 import hashlib
 import importlib.metadata
+import inspect
 import json
 import os
 import subprocess
@@ -18,10 +20,9 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from pytest_review import __version__
 from pytest_review.analyzers import (
     AssertionsAnalyzer,
-    ComplexityAnalyzer,
-    NamingAnalyzer,
     PatternsAnalyzer,
     SmellsAnalyzer,
 )
@@ -35,6 +36,7 @@ from pytest_review.analyzers.base import (
     parse_suppressed_rules,
 )
 from pytest_review.analyzers.isolation import IsolationStaticAnalyzer
+from pytest_review.analyzers.leaks import StateLeakAnalyzer
 from pytest_review.analyzers.performance import PerformanceAnalyzer
 from pytest_review.config import ReviewConfig
 from pytest_review.reporters.html import HtmlReporter
@@ -81,8 +83,6 @@ def _find_parent_class(
 # Built-in static analyzer classes.
 _BUILTIN_STATIC_ANALYZER_CLASSES: dict[str, type[StaticAnalyzer]] = {
     "assertions": AssertionsAnalyzer,
-    "naming": NamingAnalyzer,
-    "complexity": ComplexityAnalyzer,
     "patterns": PatternsAnalyzer,
     "isolation": IsolationStaticAnalyzer,
     "smells": SmellsAnalyzer,
@@ -314,8 +314,6 @@ class ReviewPlugin:
         # Static analyzers
         static_analyzers: list[StaticAnalyzer] = [
             AssertionsAnalyzer(self.review_config),
-            NamingAnalyzer(self.review_config),
-            ComplexityAnalyzer(self.review_config),
             PatternsAnalyzer(self.review_config),
             IsolationStaticAnalyzer(self.review_config),
             SmellsAnalyzer(self.review_config),
@@ -324,6 +322,7 @@ class ReviewPlugin:
         # Dynamic analyzers
         dynamic_analyzers: list[DynamicAnalyzer] = [
             PerformanceAnalyzer(self.review_config),
+            StateLeakAnalyzer(self.review_config),
         ]
 
         # Discover third-party analyzers via entry points
@@ -347,6 +346,37 @@ class ReviewPlugin:
             if dynamic_analyzer.name in excluded:
                 continue
             self.register_analyzer(dynamic_analyzer)
+
+        known = {a.name for a in static_analyzers} | {a.name for a in dynamic_analyzers}
+        self._warn_unknown_analyzers("--review-only", allowed, known)
+        self._warn_unknown_analyzers("--review-exclude", excluded or None, known)
+        self._warn_unknown_analyzers(
+            "pyproject.toml [tool.pytest-review.analyzers]",
+            set(self.review_config.analyzers) or None,
+            known,
+        )
+
+    @staticmethod
+    def _warn_unknown_analyzers(source: str, names: set[str] | None, known: set[str]) -> None:
+        """Warn about analyzer names that do not exist.
+
+        Silence here is dangerous: ``--review-only=naming`` against a build that
+        no longer ships a ``naming`` analyzer selects nothing, analyzes nothing,
+        and reports success. A CI job pinned to a removed analyzer would pass
+        while checking nothing at all.
+        """
+        if not names:
+            return
+        unknown = sorted(names - known)
+        if not unknown:
+            return
+        warnings.warn(
+            f"pytest-review: unknown analyzer(s) in {source}: {', '.join(unknown)}. "
+            f"Available: {', '.join(sorted(known))}. "
+            f"Names that do not match any analyzer select nothing.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     def _get_ast(self, file_path: Path) -> tuple[str, ast.Module]:
         """Return (source, parsed AST) for *file_path*, using a per-session cache."""
@@ -475,17 +505,72 @@ class ReviewPlugin:
         return result
 
     def _get_config_hash(self, analyzer_names: list[str]) -> str:
-        """Hash the review config state that affects static analysis output."""
+        """Hash everything that can change static analysis output.
+
+        Cached findings are only reusable while the thing that produced them is
+        unchanged, so the key covers three inputs, not just the user's config:
+
+        * the explicit config (``options`` holds only what was actually set),
+        * the *resolved* per-analyzer settings, so that changing a threshold's
+          default in code invalidates entries the old default produced,
+        * the analyzer implementations themselves, so that editing or upgrading
+          a rule invalidates the findings it used to emit.
+
+        Without the last two, an upgrade silently serves the previous version's
+        findings for every unchanged file until someone runs ``--cache-clear``.
+        """
         key_data = {
+            "version": __version__,
             "analyzers": analyzer_names,
             "ignore_rules": sorted(self.review_config.ignore_rules),
             "config": {
                 name: {"enabled": cfg.enabled, "options": cfg.options}
                 for name, cfg in self.review_config.analyzers.items()
             },
+            "resolved": self._resolved_analyzer_settings(self.review_config),
+            "impl": self._analyzer_implementation_hash(),
         }
-        raw = json.dumps(key_data, sort_keys=True)
+        raw = json.dumps(key_data, sort_keys=True, default=str)
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+    @staticmethod
+    def _resolved_analyzer_settings(review_config: ReviewConfig) -> dict[str, Any]:
+        """Per-analyzer settings *including* defaults, for cache invalidation."""
+        getters = (
+            "get_assertions_config",
+            "get_patterns_config",
+            "get_isolation_config",
+            "get_performance_config",
+            "get_smells_config",
+        )
+        resolved: dict[str, Any] = {}
+        for getter in getters:
+            try:
+                typed = getattr(review_config, getter)()
+                resolved[getter] = dataclasses.asdict(typed)
+            except Exception:  # noqa: BLE001 - never let cache keying break a run
+                resolved[getter] = "unavailable"
+        return resolved
+
+    @staticmethod
+    def _analyzer_implementation_hash() -> str:
+        """Hash the source of every registered analyzer module.
+
+        Covers third-party analyzers registered through the plugin API as well
+        as the built-ins. Falls back to the package version when a module's
+        source cannot be read (zipimport, frozen environments), which still
+        invalidates across releases.
+        """
+        digest = hashlib.sha256()
+        classes = _get_static_analyzer_classes()
+        for name in sorted(classes):
+            digest.update(name.encode())
+            try:
+                source_file = inspect.getfile(classes[name])
+                digest.update(Path(source_file).read_bytes())
+            except (TypeError, OSError):
+                digest.update(__version__.encode())
+        return digest.hexdigest()[:16]
 
     def _cache_key(self, file_path: Path, config_hash: str) -> str:
         """Build the incremental-cache key for *file_path*.
@@ -664,6 +749,20 @@ class ReviewPlugin:
         duration = time.perf_counter() - start_time
         for analyzer in self._dynamic_analyzers:
             analyzer.on_test_end(node_id, passed, duration)
+
+    def on_test_teardown(self, node_id: str) -> None:
+        """Called after a test's fixtures have finalized.
+
+        State-leak detection has to run here rather than at the end of the call
+        phase: ``monkeypatch`` and friends undo their changes during teardown,
+        and comparing before that point would report the correct way of doing
+        things as a leak. Forwarded only to analyzers that opt in, so the
+        DynamicAnalyzer interface third-party plugins implement is unchanged.
+        """
+        for analyzer in self._dynamic_analyzers:
+            hook = getattr(analyzer, "on_test_teardown", None)
+            if callable(hook):
+                hook(node_id)
 
     def get_results(self) -> list[AnalyzerResult]:
         """Get all analysis results."""
@@ -950,6 +1049,8 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) ->
     if call.when == "call":
         passed = call.excinfo is None
         plugin.on_test_end(item.nodeid, item.name, passed)
+    elif call.when == "teardown":
+        plugin.on_test_teardown(item.nodeid)
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
@@ -1044,7 +1145,12 @@ def pytest_terminal_summary(
         reporter.write_summary(results, total_tests)
         perf_stats = plugin.get_performance_stats()
         reporter.write_performance_stats(perf_stats)
-        reporter.write_score(score)
+        # The score is a gate input, not the headline. This is a defect finder:
+        # the findings are what a developer acts on, and leading with a grade
+        # invites tuning the number instead of fixing the tests. It is shown
+        # only when a threshold is actually in force.
+        if _resolve_min_score(config, plugin) > 0:
+            reporter.write_score(score)
         reporter.write_footer()
 
     # Display strict mode and min score failure messages

@@ -2,36 +2,42 @@
 
 A pytest plugin that reviews the quality of your tests.
 
-[![PyPI version](https://badge.fury.io/py/pytest-review.svg)](https://badge.fury.io/py/pytest-review)
-[![Python versions](https://img.shields.io/pypi/pyversions/pytest-review.svg)](https://pypi.org/project/pytest-review/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![PyPI version](https://badge.fury.io/py/pytest-review.svg)](https://badge.fury.io/py/pytest-review) [![Python versions](https://img.shields.io/pypi/pyversions/pytest-review.svg)](https://pypi.org/project/pytest-review/) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## Overview
 
-pytest-review analyzes your test suite and provides actionable feedback on test quality. It detects common anti-patterns, missing assertions, overly complex tests, and more.
+pytest-review finds defects in your test suite: tests that verify nothing, tests that cannot fail, and tests that leak state into other tests. It runs as a pytest plugin, so it sees real test items, real parametrization, and real runtime.
+
+**It is deliberately not a style checker.** Anything ruff already catches is out of scope, and so are style-only opinions -- see [Relationship to ruff](#relationship-to-ruff).
 
 ## Features
 
 - **Static Analysis**: AST-based detection of test quality issues
+
 - **Dynamic Analysis**: Runtime performance tracking
+
 - **Multiple Output Formats**: Terminal, JSON, and HTML reports
+
 - **Configurable**: Customize thresholds and enable/disable analyzers
-- **Quality Scoring**: Get a letter grade (A-F) for your test suite
+
+- **Optional CI Gate**: Fail a build below a quality threshold with `--review-min-score`
+
 - **Incremental Caching**: Skip re-analysis of unchanged files across runs
+
 - **Parallel Analysis**: Distribute static analysis across multiple processes
+
 - **Plugin API**: Register custom analyzers via entry points
 
 ### Analyzers
 
 | Analyzer | Description |
 |----------|-------------|
-| **assertions** | Detects empty tests, trivial assertions (`assert True`), tautologies |
-| **naming** | Checks for descriptive test names, proper snake_case |
-| **complexity** | Flags tests with too many statements, deep nesting, high cyclomatic complexity |
-| **patterns** | Identifies anti-patterns: bare except, `time.sleep`, print statements |
-| **isolation** | Detects global state modifications, class attribute mutations |
-| **performance** | Tracks slow tests at runtime |
-| **smells** | Detects test smells: assertion roulette, duplicate asserts, eager tests, magic numbers |
+| **assertions** | Tests that verify nothing: no assertions, `assert True`, tautologies, near-zero assertion-to-logic ratio |
+| **smells** | Tests that cannot fail: swallowed assertions, dead code after `return`, permanently skipped tests |
+| **isolation** | Tests that leak: global and class-attribute mutation, `os.environ`, `os.chdir`, `sys.path` |
+| **patterns** | Tests that are slow or fragile: `time.sleep`, network and DB calls, unchecked `subprocess.run` |
+| **performance** | Slow tests, measured at runtime |
+| **leaks** | State a test left behind, measured at runtime: `os.environ`, cwd, `sys.path` |
 
 ## Installation
 
@@ -51,19 +57,27 @@ Example output:
 
 ```
 ====================== pytest-review: Test Quality Report ======================
-  [X] <assertions> tests/test_example.py:15 [test_empty] Test has no assertions
+  [X] <assertions> examples/bad_tests.py:59 [test_empty_no_assertions] Test has no assertions
       Suggestion: Add at least one assertion to verify expected behavior
-  [!] <complexity> tests/test_example.py:20 [test_complex] Test has cyclomatic complexity of 12
-      Suggestion: Simplify test logic or split into multiple tests
+  [X] <smells> examples/bad_tests.py:339 [test_swallows_assertion_failure] Test catches Exception, which silently swallows assertion failures
+      Suggestion: Let assertion failures propagate; use pytest.raises() for expected exceptions
+  [!] <isolation> examples/bad_tests.py:352 [test_mutates_process_state] Test calls os.chdir(), which mutates process-wide state
+      Suggestion: Use the monkeypatch fixture, which restores state automatically
 ----------------------------------- Summary ------------------------------------
-  Tests analyzed: 25
-  Errors: 2
-  Warnings: 5
+  Tests analyzed: 30
+  Errors: 17
+  Warnings: 12
   Quality: NEEDS IMPROVEMENT
-
-  Overall Score: 72.0/100 (C)
+--------------------------------- Performance ----------------------------------
+  Tests timed: 29
+  Total: 16ms
+  Mean: 1ms | Median: 0ms | P95: 1ms
 ================================================================================
 ```
+
+(Findings trimmed; run it yourself with `pytest examples/bad_tests.py --review`. No score is printed because no threshold is set -- add `--review-min-score=70` to gate a build on it.)
+
+(Findings above are trimmed; the run is `pytest examples/bad_tests.py --review`, and the summary figures are that file's real output.)
 
 By default, `info`-level suggestions are hidden. Pass `--review-min-severity=info` to see them.
 
@@ -93,7 +107,7 @@ pytest --review --review-format=html --review-output=report.html
 pytest --review --review-format=json --review-output=report.json
 
 # Run only specific analyzers
-pytest --review --review-only=assertions,naming
+pytest --review --review-only=assertions,isolation
 
 # Fail CI if score below 80
 pytest --review --review-min-score=80
@@ -127,12 +141,10 @@ min_severity = "warning"  # display threshold: info, warning, or error
 
 [tool.pytest-review.analyzers]
 assertions = { enabled = true, min_assertions = 1 }
-naming = { enabled = true, min_length = 10 }
-complexity = { enabled = true, max_statements = 20, max_depth = 3, max_complexity = 5 }
 patterns = { enabled = true }
 isolation = { enabled = true }
 performance = { enabled = true, slow_threshold_ms = 500, very_slow_threshold_ms = 2000 }
-smells = { enabled = true, max_assertions_without_message = 1, check_magic_numbers = true }
+smells = { enabled = true }
 ```
 
 ### Skipping Tests
@@ -148,26 +160,39 @@ def test_intentionally_complex():
     ...
 ```
 
-## Scoring System
+## Scoring (optional CI gate)
 
-The quality score is calculated using weighted categories:
+The score exists to gate a build, not to be a headline. **It is not printed unless you set `--review-min-score`** (or `min_score` in config): the findings are what you act on, and leading with a grade invites tuning the number instead of fixing the tests.
+
+When a threshold is in force, the score is calculated using weighted categories:
 
 | Category | Weight | Analyzers |
 |----------|--------|-----------|
 | Assertions | 30% | assertions |
-| Clarity | 25% | naming, smells |
+| Clarity | 25% | smells |
 | Isolation | 20% | isolation |
-| Simplicity | 15% | complexity, patterns |
+| Simplicity | 15% | patterns |
 | Performance | 10% | performance |
 
-Severity penalties:
-- **Error**: -15 points per issue
-- **Warning**: -5 points per issue
-- **Info**: -1 point per issue
+The score is a **defect density**, so it does not change simply because a suite is large: a 1,000-test suite and a 10-test suite with the same proportion of defective tests score the same.
 
-Critical penalties (applied globally):
-- Missing assertions: -20 points
-- Trivial assertions: -10 points
+Within each category, severity penalties are what a single defective test forfeits:
+
+- **Error**: 100 (the test forfeits all of its credit in that category)
+
+- **Warning**: 35
+
+- **Info**: 7
+
+Each test's penalty saturates at 100, so one very bad test cannot consume the budget of tests that are fine. The category score is the mean of those per-test penalties across the whole suite, which means a category reaches 0 only when every test in the suite is defective.
+
+Critical penalties are applied globally on top, scaled by the fraction of tests affected:
+
+- **Missing assertions**: up to -70 points. This is not a chosen number -- it is exactly the score left standing once the assertions category is wiped out, so a suite in which *every* test verifies nothing scores 0.
+
+- **Trivial assertions**: up to -25 points. Deliberately smaller, because `assertions.trivial` also fires on a test that contains `assert True` *alongside* real assertions: it marks dead weight rather than a worthless test.
+
+So one empty test in a 100-test suite costs 0.7 points, while a suite of nothing but empty tests scores 0 (F).
 
 ### Grade Scale
 
@@ -181,50 +206,115 @@ Critical penalties (applied globally):
 
 ## Issue Types
 
+Every rule is meant to indicate an actual defect. There are 21 of them, and the list is short on purpose: a rule that fires on healthy code costs more trust than it earns.
+
 ### Errors (X)
 
-Critical issues that indicate likely bugs or useless tests:
+Tests that are broken or verify nothing:
 
-- `assertions.missing` - Test has no assertions
-- `assertions.trivial` - Trivial assertion like `assert True`
-- `assertions.tautology` - Comparing value to itself
-- `smells.swallowed_assertion` - `except AssertionError/Exception/BaseException` silently swallows assertion failures
+- `assertions.missing` - test has no assertions
+
+- `assertions.trivial` - `assert True`, or comparing a value to itself
+
+- `assertions.always_true` - asserting on a generator expression or lambda. The *object* is truthy, so the comparison inside it never runs
+
+- `assertions.uncalled_assertion` - `assert mock.assert_called_once` -- referenced but never called, so the assertion always passes. (Ruff's `PGH005` catches the bare-statement form; this catches the one hiding inside an `assert`.)
+
+- `assertions.mock_tautology` - the test asserts on a call to something it patched itself, so it verifies `unittest.mock` rather than any application code:
+
+  ```python
+  @mock.patch("pkg.svc.fetch")
+  def test_fetch(mock_fetch):
+      mock_fetch.return_value = 5
+      assert pkg.svc.fetch() == 5      # asserts the mock returned what you set
+  ```
+
+  Patching a dependency and asserting on the code that *uses* it is the correct pattern and is not reported, nor is asserting on the mock object itself (`mock_fetch.assert_called_once()`), which is a legitimate wiring check.
+
+  Note there is deliberately **no rule for "too many mocks"**. The right number depends entirely on how many collaborators the code has, and mocking every collaborator is a deliberate style. A count threshold there would be an opinion, not a defect.
+- `smells.swallowed_assertion` - `except AssertionError/Exception/BaseException` means the test cannot fail
 
 ### Warnings (!)
 
-Issues that may indicate problems:
+Tests that leak state, cannot fail, or are needlessly fragile:
 
-- `naming.non_descriptive` - Generic names like `test_foo`
-- `complexity.too_many_statements` - Test too long
-- `complexity.too_deep` - Excessive nesting
-- `complexity.too_complex` - High cyclomatic complexity
-- `patterns.bare_except` - Catches all exceptions
-- `patterns.sleep_in_test` - Uses `time.sleep()`
-- `isolation.global_modification` - Modifies global state
-- `isolation.process_mutation` - Mutates process-wide state (`os.chdir`, `sys.path`, `sys.argv`)
-- `smells.assertion_roulette` - Multiple assertions without messages
-- `smells.duplicate_assert` - Duplicate assertion statements
-- `smells.ignored_test` - Test is skipped via decorator, `pytest.skip(...)`, `pytest.xfail(...)`, `self.skipTest(...)`, or `raise SkipTest(...)`
-- `smells.early_return` - `return` in a test body, bypassing subsequent assertions
+- `assertions.insufficient` - fewer assertions than `min_assertions` (only fires if you raise it above 1)
+
+- `smells.early_return` - an *unconditional* `return`, leaving the assertions below it dead. A `return` that is the sole body of an `if` is a deliberate toggle and is not reported.
+
+- `smells.try_except_in_test` - `try/except` *with handlers*, which can mask a failure. `try/finally` is not reported: it has no handlers and cannot mask anything.
+
+- `smells.duplicate_assert` - the same assertion twice, usually a copy-paste bug
+
+- `smells.vacuous_loop` - every assertion sits inside a `for` loop, so the test passes having verified nothing when the iterable is empty. Loops over a non-empty literal or `range(n)` are exempt, as is any test with an assertion outside the loop
+
+- `smells.ignored_test` - skipped by decorator, or by an *unguarded* `pytest.skip(...)`, `pytest.xfail(...)`, `self.skipTest(...)` or `raise SkipTest(...)`. A skip guarded by an `if` (the platform-gate pattern) is not reported.
+
+- `isolation.global_modification` - `global` mutation visible to later tests
+
+- `isolation.class_attr_modification` - mutating shared class or module state
+
+- `isolation.env_mutation` - writing `os.environ` without `monkeypatch`
+
+- `isolation.process_mutation` - `os.chdir`, `sys.path`, `sys.argv`
+
+- `isolation.bare_patch` - `patch()` with neither a context manager nor a decorator, so nothing guarantees cleanup
+
+- `patterns.sleep_in_test` - `time.sleep()` makes tests slow and flaky
+
+- `patterns.slow_call` - real network I/O (`requests`, `httpx`, `urllib`). Suspected *database* calls are reported at INFO instead, since they are matched by variable name.
+
+- `patterns.subprocess_no_check` - `subprocess.run()` without `check=True` swallows failures
+
+- `performance.very_slow` - runtime above `very_slow_threshold_ms`
+
+- `leaks.env`, `leaks.cwd`, `leaks.sys_path` - **measured at runtime**: state the test changed and never restored. Compared *after teardown*, so `monkeypatch` and other restoring fixtures are not reported. This catches leaks caused inside a helper or a library call, which nothing in the test's own source reveals
 
 ### Info (i)
 
-Suggestions for improvement. **Hidden by default** -- run with `--review-min-severity=info` (or set `min_severity = "info"` in `pyproject.toml`) to see them:
+**Hidden by default** -- run with `--review-min-severity=info` (or set `min_severity = "info"` in `pyproject.toml`):
 
-- `naming.too_short` - Name could be more descriptive
-- `patterns.print_statement` - Debug print left in test
-- `performance.slow_test` - Test runs slowly
-- `smells.magic_number` - Literal number in assertion
-- `smells.eager_test` - Test verifies multiple methods
-- `assertions.low_value` - Weak assertion (`isinstance`, `is not None`)
-- `assertions.yoda_condition` - Reversed comparison (`assert 42 == x`)
-- `assertions.raises_without_match` - `pytest.raises()` without `match=`
+- `assertions.low_ratio` - lots of setup, almost nothing verified
+
+- `patterns.hardcoded_path` - absolute path passed to a path-consuming call (`open`, `Path`, `os.*`, `shutil.*`, `glob.*`, `tempfile.*`)
+
+- `patterns.os_system` - `os.system()` in a test
+
+- `patterns.slow_call` - suspected database I/O (`cursor.execute()`, `session.query()`)
+
+- `performance.slow` - runtime above `slow_threshold_ms`
+
+## Relationship to ruff
+
+pytest-review is meant to sit alongside ruff, not overlap it. If ruff can catch something, ruff should catch it -- it is faster and already in your toolchain.
+
+Enable ruff's pytest rules:
+
+```toml
+[tool.ruff.lint]
+select = ["E", "F", "B", "SIM", "PT"]
+```
+
+That covers what pytest-review deliberately does **not**:
+
+| Concern | Covered by |
+|---|---|
+| Bare `except:` | ruff `E722` |
+| `is` with a literal | ruff `F632` |
+| Mutable default arguments | ruff `B006` |
+| `print()` left in a test | ruff `T201` |
+| `open()` without a context manager | ruff `SIM115` |
+| `pytest.raises()` without `match=` | ruff `PT011` |
+| Cyclomatic complexity | ruff `C901` |
+| Fixture and parametrize style | ruff `PT001`-`PT030` |
+
+Test naming conventions, magic numbers, assertion counts, and "eager" tests were removed outright: they are style opinions, they fired constantly on healthy code, and none of them indicated a defect.
 
 ## Performance
 
 ### Incremental Caching
 
-Static analysis results are cached per file, keyed on the file's path (relative to the pytest root), a SHA-256 hash of its contents, and a hash of the active analyzer configuration. On subsequent runs, unchanged files are skipped entirely. The cache is stored in pytest's `.pytest_cache/` directory and is invalidated automatically when file contents or config change. Including the path in the key keeps files with byte-identical contents in separate cache entries.
+Static analysis results are cached per file, keyed on the file's path (relative to the pytest root), a SHA-256 hash of its contents, and a hash of the active analyzer configuration. On subsequent runs, unchanged files are skipped entirely. The key also covers the plugin version, the resolved analyzer settings (so changing a rule's default threshold invalidates), and a hash of each analyzer module's source (so editing a rule invalidates the findings it emitted). The cache is stored in pytest's `.pytest_cache/` directory and is invalidated automatically when any of those change. Including the path in the key keeps files with byte-identical contents in separate cache entries.
 
 Disable caching with `--review-no-cache`. Clear the cache with pytest's built-in `--cache-clear`.
 
@@ -314,7 +404,8 @@ pytest --review --review-exclude=my-analyzer
 
 ## Acknowledgments
 
-- The smells analyzer is inspired by the [pytest-smell](https://github.com/maxpacs98/disertation) project from the dissertation "Detecting Test Smells in Python" by Maxim Pacsial. 
+- The smells analyzer is inspired by the [pytest-smell](https://github.com/maxpacs98/disertation) project from the dissertation "Detecting Test Smells in Python" by Maxim Pacsial.
+
 - Test smell concepts are based on research by Van Deursen et al. ("Refactoring Test Code", 2001) and Meszaros ("xUnit Test Patterns", 2007).
 
 ## Contributing

@@ -135,134 +135,32 @@ def test_one_assertion():
         insufficient_issues = [i for i in result.issues if i.rule == "assertions.insufficient"]
         assert len(insufficient_issues) == 1
 
-    def test_detects_isinstance_assertion(self) -> None:
+    def _raises_issues(self, source: str, name: str) -> list[str]:
+        analyzer = AssertionsAnalyzer(ReviewConfig())
+        result = analyzer.analyze(make_test_info(source.strip(), name))
+        return [i.rule for i in result.issues if i.rule == "assertions.raises_without_match"]
+
+    def test_no_raises_issue_with_excinfo_match(self) -> None:
+        """``excinfo.match(...)`` after ``as excinfo`` verifies the message."""
         source = """
-def test_isinstance():
-    result = get_result()
-    assert isinstance(result, dict)
-"""
-        config = ReviewConfig()
-        analyzer = AssertionsAnalyzer(config)
-        test_info = make_test_info(source.strip(), "test_isinstance")
-
-        result = analyzer.analyze(test_info)
-
-        low_value = [i for i in result.issues if i.rule == "assertions.low_value"]
-        assert len(low_value) == 1
-        assert "isinstance" in low_value[0].message
-        assert low_value[0].severity == Severity.INFO
-
-    def test_detects_is_not_none_assertion(self) -> None:
-        source = """
-def test_not_none():
-    result = get_result()
-    assert result is not None
-"""
-        config = ReviewConfig()
-        analyzer = AssertionsAnalyzer(config)
-        test_info = make_test_info(source.strip(), "test_not_none")
-
-        result = analyzer.analyze(test_info)
-
-        low_value = [i for i in result.issues if i.rule == "assertions.low_value"]
-        assert len(low_value) == 1
-        assert "is not None" in low_value[0].message
-
-    def test_no_low_value_for_equality_check(self) -> None:
-        source = """
-def test_equality():
-    result = get_result()
-    assert result == 42
-"""
-        config = ReviewConfig()
-        analyzer = AssertionsAnalyzer(config)
-        test_info = make_test_info(source.strip(), "test_equality")
-
-        result = analyzer.analyze(test_info)
-
-        low_value = [i for i in result.issues if i.rule == "assertions.low_value"]
-        assert len(low_value) == 0
-
-    def test_detects_raises_without_match(self) -> None:
-        source = """
-def test_raises_no_match():
+def test_raises_excinfo_match():
     import pytest
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as excinfo:
         do_something()
+    excinfo.match("invalid")
 """
-        config = ReviewConfig()
-        analyzer = AssertionsAnalyzer(config)
-        test_info = make_test_info(source.strip(), "test_raises_no_match")
+        assert self._raises_issues(source, "test_raises_excinfo_match") == []
 
-        result = analyzer.analyze(test_info)
-
-        match_issues = [i for i in result.issues if i.rule == "assertions.raises_without_match"]
-        assert len(match_issues) == 1
-        assert "ValueError" in match_issues[0].message
-        assert match_issues[0].severity == Severity.INFO
-
-    def test_no_raises_issue_with_match(self) -> None:
+    def test_no_raises_issue_with_str_excinfo_value(self) -> None:
+        """``assert ... in str(excinfo.value)`` verifies the message."""
         source = """
-def test_raises_with_match():
+def test_raises_str_value():
     import pytest
-    with pytest.raises(ValueError, match="invalid"):
+    with pytest.raises(ValueError) as excinfo:
         do_something()
+    assert "invalid" in str(excinfo.value)
 """
-        config = ReviewConfig()
-        analyzer = AssertionsAnalyzer(config)
-        test_info = make_test_info(source.strip(), "test_raises_with_match")
-
-        result = analyzer.analyze(test_info)
-
-        match_issues = [i for i in result.issues if i.rule == "assertions.raises_without_match"]
-        assert len(match_issues) == 0
-
-    def test_detects_yoda_condition(self) -> None:
-        source = """
-def test_yoda():
-    x = 42
-    assert 42 == x
-"""
-        config = ReviewConfig()
-        analyzer = AssertionsAnalyzer(config)
-        test_info = make_test_info(source.strip(), "test_yoda")
-
-        result = analyzer.analyze(test_info)
-
-        yoda_issues = [i for i in result.issues if i.rule == "assertions.yoda_condition"]
-        assert len(yoda_issues) == 1
-        assert "42" in yoda_issues[0].message
-        assert yoda_issues[0].severity == Severity.INFO
-
-    def test_no_yoda_for_normal_order(self) -> None:
-        source = """
-def test_normal():
-    x = 42
-    assert x == 42
-"""
-        config = ReviewConfig()
-        analyzer = AssertionsAnalyzer(config)
-        test_info = make_test_info(source.strip(), "test_normal")
-
-        result = analyzer.analyze(test_info)
-
-        yoda_issues = [i for i in result.issues if i.rule == "assertions.yoda_condition"]
-        assert len(yoda_issues) == 0
-
-    def test_no_yoda_for_none_comparison(self) -> None:
-        source = """
-def test_none_check():
-    x = get_value()
-    assert None == x
-"""
-        config = ReviewConfig()
-        analyzer = AssertionsAnalyzer(config)
-        test_info = make_test_info(source.strip(), "test_none_check")
-
-        result = analyzer.analyze(test_info)
-
-        yoda_issues = [i for i in result.issues if i.rule == "assertions.yoda_condition"]
-        assert len(yoda_issues) == 0
+        assert self._raises_issues(source, "test_raises_str_value") == []
 
     def test_detects_mock_assert_called_once(self) -> None:
         source = """
@@ -443,6 +341,107 @@ def test_not_assert():
 
         missing = [i for i in result.issues if i.rule == "assertions.missing"]
         assert len(missing) == 1
+
+    def _rules(self, source: str, name: str) -> list[str]:
+        analyzer = AssertionsAnalyzer(ReviewConfig())
+        return [i.rule for i in analyzer.analyze(make_test_info(source.strip(), name)).issues]
+
+    def test_detects_generator_expression_in_assert(self) -> None:
+        """``assert (x for x in xs)`` asserts on the generator object, not the values."""
+        source = """
+def test_all_positive(items):
+    assert (x > 0 for x in items)
+"""
+        assert "assertions.always_true" in self._rules(source, "test_all_positive")
+
+    def test_detects_lambda_in_assert(self) -> None:
+        source = """
+def test_predicate():
+    assert lambda: False
+"""
+        assert "assertions.always_true" in self._rules(source, "test_predicate")
+
+    def test_list_comprehension_in_assert_is_fine(self) -> None:
+        """A comprehension is materialised, so its truthiness is meaningful."""
+        source = """
+def test_filters(items):
+    assert [x for x in items if x > 0] == [1]
+"""
+        assert "assertions.always_true" not in self._rules(source, "test_filters")
+
+    def test_detects_uncalled_mock_assertion(self) -> None:
+        """``assert mock.assert_called_once`` is always true -- it is never called.
+
+        Ruff's PGH005 catches the bare-statement form but not this one, where the
+        reference hides inside an ``assert``.
+        """
+        source = """
+def test_calls_service(mock_svc):
+    assert mock_svc.assert_called_once
+"""
+        assert "assertions.uncalled_assertion" in self._rules(source, "test_calls_service")
+
+    def test_detects_uncalled_called_once_property(self) -> None:
+        source = """
+def test_calls_service(mock_svc):
+    assert mock_svc.called_once
+"""
+        assert "assertions.uncalled_assertion" in self._rules(source, "test_calls_service")
+
+    def test_called_mock_assertion_is_fine(self) -> None:
+        source = """
+def test_calls_service(mock_svc):
+    mock_svc.assert_called_once()
+"""
+        assert "assertions.uncalled_assertion" not in self._rules(source, "test_calls_service")
+
+    def test_plain_attribute_assert_is_fine(self) -> None:
+        """Only assertion-shaped attribute names are suspicious."""
+        source = """
+def test_flag(result):
+    assert result.is_valid
+"""
+        assert "assertions.uncalled_assertion" not in self._rules(source, "test_flag")
+
+    def test_detects_assertion_on_a_patched_target(self) -> None:
+        """Asserting on the thing you patched verifies unittest.mock, not your code."""
+        source = """
+@mock.patch("pkg.svc.fetch")
+def test_fetches(mock_fetch):
+    mock_fetch.return_value = 5
+    assert pkg.svc.fetch() == 5
+"""
+        assert "assertions.mock_tautology" in self._rules(source, "test_fetches")
+
+    def test_detects_tautology_through_a_shorter_import_path(self) -> None:
+        """``svc.fetch()`` still matches a ``pkg.svc.fetch`` patch target."""
+        source = """
+@mock.patch("pkg.svc.fetch")
+def test_fetches(mock_fetch):
+    mock_fetch.return_value = 5
+    assert svc.fetch() == 5
+"""
+        assert "assertions.mock_tautology" in self._rules(source, "test_fetches")
+
+    def test_patching_a_dependency_and_asserting_on_real_code_is_fine(self) -> None:
+        """The correct pattern: the patched call is an input, not the subject."""
+        source = """
+@mock.patch("pkg.svc.fetch")
+def test_doubles(mock_fetch):
+    mock_fetch.return_value = 5
+    assert pkg.svc.double_it() == 10
+"""
+        assert "assertions.mock_tautology" not in self._rules(source, "test_doubles")
+
+    def test_asserting_on_the_mock_object_is_fine(self) -> None:
+        """Checking that a dependency was called is a wiring check, not a tautology."""
+        source = """
+@mock.patch("pkg.svc.fetch")
+def test_calls_dependency(mock_fetch):
+    pkg.svc.run()
+    mock_fetch.assert_called_once()
+"""
+        assert "assertions.mock_tautology" not in self._rules(source, "test_calls_dependency")
 
     def test_stores_metadata(self) -> None:
         source = """

@@ -37,8 +37,6 @@ class SmellsAnalyzer(StaticAnalyzer):
         super().__init__(config)
         typed = config.get_smells_config()
         self._max_assertions_without_message = typed.max_assertions_without_message
-        self._check_magic_numbers = typed.check_magic_numbers
-        self._check_eager_test = typed.check_eager_test
 
     def _analyze_ast(self, test: TestItemInfo, result: AnalyzerResult) -> None:
         """Analyze test for smells."""
@@ -48,9 +46,6 @@ class SmellsAnalyzer(StaticAnalyzer):
 
 class SmellVisitor(ast.NodeVisitor):
     """AST visitor that detects test smells."""
-
-    # Magic number exceptions - these are commonly acceptable
-    ALLOWED_MAGIC_NUMBERS = {0, 1, -1, 2, 100, 1000}
 
     def __init__(
         self,
@@ -62,35 +57,17 @@ class SmellVisitor(ast.NodeVisitor):
         self._result = result
         self._analyzer = analyzer
         self._assertions: list[ast.Assert] = []
-        self._assertion_messages: list[str] = []
-        self._call_targets: set[str] = set()
         self._has_skip_marker = False
-        self._runtime_skip_calls: list[tuple[int, str]] = []
+        self._runtime_skip_calls: list[tuple[int, str, bool]] = []
+        self._if_depth = 0
 
     def visit_Assert(self, node: ast.Assert) -> None:
-        """Track assertions for roulette and duplicate detection."""
+        """Track assertions for duplicate detection."""
         self._assertions.append(node)
-
-        # Check for assertion message
-        if node.msg is None:
-            self._assertion_messages.append("")
-        else:
-            self._assertion_messages.append(ast.dump(node.msg))
-
-        # Check for magic numbers in assertions
-        if self._analyzer._check_magic_numbers:
-            self._check_magic_number(node)
-
-        # Track what's being tested for eager test detection
-        if self._analyzer._check_eager_test:
-            self._extract_call_target(node.test)
-
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
-        """Track function calls for eager-test and runtime-skip detection."""
-        if self._analyzer._check_eager_test:
-            self._extract_call_target(node)
+        """Track calls for runtime-skip detection."""
         self._check_runtime_skip(node)
         self.generic_visit(node)
 
@@ -102,6 +79,9 @@ class SmellVisitor(ast.NodeVisitor):
           false-positives from user code with a ``skip`` helper).
         - ``self.skipTest(...)`` (unittest.TestCase style).
 
+        The third element records whether the call sits inside an ``if``: a
+        *guarded* skip is the documented pattern for "skip on this platform",
+        not a dead test, so it is not reported by ``_report_runtime_skips``.
         ``pytest.importorskip(...)`` is deliberately excluded because it expresses
         a legitimate optional-dependency gate, not a dead test.
         """
@@ -110,13 +90,14 @@ class SmellVisitor(ast.NodeVisitor):
             return
         if not isinstance(func.value, ast.Name):
             return
+        guarded = self._if_depth > 0
         # pytest.skip / pytest.xfail
         if func.value.id == "pytest" and func.attr in ("skip", "xfail"):
-            self._runtime_skip_calls.append((node.lineno, f"pytest.{func.attr}"))
+            self._runtime_skip_calls.append((node.lineno, f"pytest.{func.attr}", guarded))
             return
         # self.skipTest (unittest.TestCase.skipTest)
         if func.value.id == "self" and func.attr == "skipTest":
-            self._runtime_skip_calls.append((node.lineno, "self.skipTest"))
+            self._runtime_skip_calls.append((node.lineno, "self.skipTest", guarded))
 
     def visit_Raise(self, node: ast.Raise) -> None:
         """Detect ``raise SkipTest(...)`` / ``raise unittest.SkipTest(...)``."""
@@ -130,51 +111,15 @@ class SmellVisitor(ast.NodeVisitor):
         # ``raise SkipTest(...)`` -> exc is a Call; ``raise SkipTest`` -> exc is Name/Attr
         target = exc.func if isinstance(exc, ast.Call) else exc
         if isinstance(target, ast.Name) and target.id == "SkipTest":
-            self._runtime_skip_calls.append((node.lineno, "raise SkipTest"))
+            self._runtime_skip_calls.append((node.lineno, "raise SkipTest", self._if_depth > 0))
             return
         if isinstance(target, ast.Attribute) and target.attr == "SkipTest":
             qualifier = ""
             if isinstance(target.value, ast.Name):
                 qualifier = f"{target.value.id}."
-            self._runtime_skip_calls.append((node.lineno, f"raise {qualifier}SkipTest"))
-
-    def _extract_call_target(self, node: ast.AST) -> None:
-        """Extract the function/method being called."""
-        if isinstance(node, ast.Call):
-            if isinstance(node.func, ast.Name):
-                self._call_targets.add(node.func.id)
-            elif isinstance(node.func, ast.Attribute):
-                # Get the full attribute chain (e.g., obj.method)
-                self._call_targets.add(node.func.attr)
-        elif isinstance(node, ast.Compare):
-            # Check both sides of comparison
-            self._extract_call_target(node.left)
-            for comparator in node.comparators:
-                self._extract_call_target(comparator)
-        elif isinstance(node, ast.BoolOp):
-            for value in node.values:
-                self._extract_call_target(value)
-
-    def _check_magic_number(self, node: ast.Assert) -> None:
-        """Check for magic numbers in assertion."""
-        for child in ast.walk(node.test):
-            if (
-                isinstance(child, ast.Constant)
-                and isinstance(child.value, (int, float))
-                and child.value not in self.ALLOWED_MAGIC_NUMBERS
-            ):
-                self._result.add_issue(
-                    Issue(
-                        rule="smells.magic_number",
-                        message=f"Magic number {child.value} in assertion",
-                        severity=Severity.INFO,
-                        file_path=self._test.file_path,
-                        line=child.lineno,
-                        test_name=self._test.name,
-                        suggestion="Use a named constant or variable for clarity",
-                    )
-                )
-                return  # Only report once per assertion
+            self._runtime_skip_calls.append(
+                (node.lineno, f"raise {qualifier}SkipTest", self._if_depth > 0)
+            )
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         """Check for skip decorators and visit body."""
@@ -242,11 +187,8 @@ class SmellVisitor(ast.NodeVisitor):
 
     def _finalize_checks(self) -> None:
         """Run checks that need all assertions collected."""
-        self._check_assertion_roulette()
         self._check_duplicate_assertions()
-        self._check_eager_test()
-        self._check_conditional_logic()
-        self._check_fixture_overuse()
+        self._check_vacuous_loop()
         self._check_try_except()
         self._check_early_return()
         self._check_swallowed_assertion()
@@ -273,16 +215,40 @@ class SmellVisitor(ast.NodeVisitor):
         for stmt in self._test.node.body:
             yield from _walk(stmt)
 
+    def visit_If(self, node: ast.If) -> None:
+        """Track conditional depth so guarded skip calls aren't treated as dead tests."""
+        self._if_depth += 1
+        self.generic_visit(node)
+        self._if_depth -= 1
+
+    def _guard_return_ids(self) -> set[int]:
+        """Ids of early-returns that are the sole body of an ``if``.
+
+        ``if not os.environ.get("CI"): return`` is a deliberate test toggle,
+        not a bypass hack, so it must not be flagged.
+        """
+        guard_ids: set[int] = set()
+        for node in self._walk_test_body():
+            if not isinstance(node, ast.If):
+                continue
+            for branch in (node.body, node.orelse):
+                if len(branch) == 1 and isinstance(branch[0], ast.Return):
+                    guard_ids.add(id(branch[0]))
+        return guard_ids
+
     def _check_early_return(self) -> None:
         """Flag ``return`` statements in the test body.
 
         Tests have no reason to return a value; an early ``return`` is a common
         hack for "temporarily disabling" downstream assertions without deleting
-        them, producing a test that silently passes. Nested function definitions
-        are excluded by ``_walk_test_body``.
+        them, producing a test that silently passes. Guard returns (the sole
+        body of an ``if``) are deliberate toggles and are exempt. Nested
+        function definitions are excluded by ``_walk_test_body``.
         """
         for node in self._walk_test_body():
             if not isinstance(node, ast.Return):
+                continue
+            if id(node) in self._guard_return_ids():
                 continue
             self._result.add_issue(
                 Issue(
@@ -324,8 +290,7 @@ class SmellVisitor(ast.NodeVisitor):
                     Issue(
                         rule="smells.swallowed_assertion",
                         message=(
-                            f"Test catches {label}, which silently swallows "
-                            "assertion failures"
+                            f"Test catches {label}, which silently swallows assertion failures"
                         ),
                         severity=Severity.ERROR,
                         file_path=self._test.file_path,
@@ -352,8 +317,14 @@ class SmellVisitor(ast.NodeVisitor):
         return names
 
     def _report_runtime_skips(self) -> None:
-        """Emit one issue per ``pytest.skip(...)`` / ``pytest.xfail(...)`` call."""
-        for lineno, name in self._runtime_skip_calls:
+        """Emit one issue per unguarded ``pytest.skip(...)`` call.
+
+        Skips guarded by an ``if`` (the documented platform-gate pattern) are
+        not dead tests and are not reported.
+        """
+        for lineno, name, guarded in self._runtime_skip_calls:
+            if guarded:
+                continue
             self._result.add_issue(
                 Issue(
                     rule="smells.ignored_test",
@@ -369,45 +340,119 @@ class SmellVisitor(ast.NodeVisitor):
                 )
             )
 
-    def _check_assertion_roulette(self) -> None:
-        """Check for multiple assertions without messages."""
-        if len(self._assertions) <= 1:
+    @staticmethod
+    def _is_known_nonempty(iterable: ast.expr) -> bool:
+        """True when the loop provably runs at least once.
+
+        Looping over a literal with elements, or ``range`` of a positive
+        constant, cannot be vacuous, so those must not be reported.
+        """
+        if isinstance(iterable, (ast.List, ast.Tuple, ast.Set)):
+            return len(iterable.elts) > 0
+        if isinstance(iterable, ast.Dict):
+            return len(iterable.keys) > 0
+        if (
+            isinstance(iterable, ast.Call)
+            and isinstance(iterable.func, ast.Name)
+            and iterable.func.id == "range"
+            and iterable.args
+        ):
+            first = iterable.args[0]
+            return (
+                isinstance(first, ast.Constant)
+                and isinstance(first.value, int)
+                and first.value > 0
+            )
+        return False
+
+    def _check_vacuous_loop(self) -> None:
+        """Flag a test whose every assertion sits inside a ``for`` body.
+
+        If the iterable turns out to be empty the loop body never runs and the
+        test passes having verified nothing -- a failure mode that survives
+        refactors silently, because the test stays green.
+        """
+        if not self._assertions:
             return
 
-        assertions_without_msg = sum(1 for msg in self._assertion_messages if not msg)
-        threshold = self._analyzer._max_assertions_without_message
+        loop_assertions: set[int] = set()
+        vacuous_loops: list[ast.For | ast.AsyncFor] = []
+        for node in self._walk_test_body():
+            if not isinstance(node, (ast.For, ast.AsyncFor)):
+                continue
+            inner = [n for n in ast.walk(node) if isinstance(n, ast.Assert)]
+            if not inner:
+                continue
+            if self._is_known_nonempty(node.iter):
+                continue
+            if node.orelse:  # for/else runs when the loop did not break
+                continue
+            loop_assertions.update(id(a) for a in inner)
+            vacuous_loops.append(node)
 
-        if assertions_without_msg > threshold:
-            self._result.add_issue(
-                Issue(
-                    rule="smells.assertion_roulette",
-                    message=(
-                        f"Test has {assertions_without_msg} assertions without messages "
-                        f"(threshold: {threshold})"
-                    ),
-                    severity=Severity.WARNING,
-                    file_path=self._test.file_path,
-                    line=self._test.line,
-                    test_name=self._test.name,
-                    suggestion=(
-                        "Add descriptive messages to assertions: "
-                        "assert x == y, 'expected x to equal y'"
-                    ),
-                )
+        if not vacuous_loops:
+            return
+        if any(id(a) not in loop_assertions for a in self._assertions):
+            return  # at least one assertion runs unconditionally
+
+        self._result.add_issue(
+            Issue(
+                rule="smells.vacuous_loop",
+                message=(
+                    "Every assertion is inside a for loop; the test passes without "
+                    "verifying anything if the iterable is empty"
+                ),
+                severity=Severity.WARNING,
+                file_path=self._test.file_path,
+                line=vacuous_loops[0].lineno,
+                test_name=self._test.name,
+                suggestion="Assert the collection is non-empty first, or use parametrize",
             )
+        )
+
+    def _statement_blocks(self) -> Iterator[list[ast.stmt]]:
+        """Yield every statement list in the test body, innermost blocks included."""
+        stack: list[list[ast.stmt]] = [self._test.node.body]
+        while stack:
+            block = stack.pop()
+            yield block
+            for stmt in block:
+                for field in ("body", "orelse", "finalbody"):
+                    nested = getattr(stmt, field, None)
+                    if isinstance(nested, list) and nested and isinstance(nested[0], ast.stmt):
+                        stack.append(nested)
+                for handler in getattr(stmt, "handlers", []) or []:
+                    stack.append(handler.body)
 
     def _check_duplicate_assertions(self) -> None:
-        """Check for duplicate assertion statements."""
-        seen: dict[str, int] = {}
+        """Flag an assertion repeated with nothing happening in between.
+
+        Only repeats within an unbroken run of assertions count. Re-asserting
+        the same expression after an intervening statement is the standard way
+        to check an invariant across a state change::
+
+            assert result.has_errors is False
+            result.add_issue(...)          # <- state changes here
+            assert result.has_errors is True
+
+        Treating that as duplication reports correct code, which is exactly the
+        kind of finding this rule set exists to avoid.
+        """
         duplicates: list[tuple[int, str]] = []
 
-        for assertion in self._assertions:
-            # Create a normalized representation of the assertion
-            assertion_repr = ast.dump(assertion.test)
-            if assertion_repr in seen:
-                duplicates.append((assertion.lineno, assertion_repr))
-            else:
-                seen[assertion_repr] = assertion.lineno
+        for stmt_list in self._statement_blocks():
+            # Assertions do not mutate anything, so a run of consecutive
+            # assertions is compared as a group; any other statement may change
+            # state and starts a new run.
+            seen_in_run: set[str] = set()
+            for stmt in stmt_list:
+                if isinstance(stmt, ast.Assert):
+                    current = ast.dump(stmt.test)
+                    if current in seen_in_run:
+                        duplicates.append((stmt.lineno, current))
+                    seen_in_run.add(current)
+                else:
+                    seen_in_run.clear()
 
         if duplicates:
             self._result.add_issue(
@@ -422,93 +467,11 @@ class SmellVisitor(ast.NodeVisitor):
                 )
             )
 
-    def _check_eager_test(self) -> None:
-        """Check if test verifies multiple distinct methods/functions."""
-        if not self._analyzer._check_eager_test:
-            return
-
-        # Filter out common assertion helpers and built-ins
-        excluded = {
-            "len",
-            "str",
-            "int",
-            "float",
-            "list",
-            "dict",
-            "set",
-            "tuple",
-            "isinstance",
-            "hasattr",
-            "getattr",
-            "type",
-            "id",
-            "repr",
-            "sorted",
-            "reversed",
-            "enumerate",
-            "zip",
-            "map",
-            "filter",
-            "any",
-            "all",
-            "sum",
-            "min",
-            "max",
-            "abs",
-            "round",
-            "assertTrue",
-            "assertFalse",
-            "assertEqual",
-            "assertNotEqual",
-            "assertIn",
-            "assertNotIn",
-            "assertIs",
-            "assertIsNot",
-            "assertIsNone",
-            "assertIsNotNone",
-            "assertRaises",
-        }
-
-        distinct_targets = self._call_targets - excluded
-
-        if len(distinct_targets) > 2:
-            self._result.add_issue(
-                Issue(
-                    rule="smells.eager_test",
-                    message=(
-                        f"Test calls {len(distinct_targets)} distinct methods: "
-                        f"{', '.join(sorted(distinct_targets)[:5])}"
-                        f"{'...' if len(distinct_targets) > 5 else ''}"
-                    ),
-                    severity=Severity.INFO,
-                    file_path=self._test.file_path,
-                    line=self._test.line,
-                    test_name=self._test.name,
-                    suggestion="Consider splitting into focused tests for each behavior",
-                )
-            )
-
-    def _check_conditional_logic(self) -> None:
-        """Check for if/else branches in test body."""
-        for child in self._walk_test_body():
-            if isinstance(child, ast.If):
-                self._result.add_issue(
-                    Issue(
-                        rule="smells.conditional_test",
-                        message="Test contains conditional logic (if/else)",
-                        severity=Severity.WARNING,
-                        file_path=self._test.file_path,
-                        line=child.lineno,
-                        test_name=self._test.name,
-                        suggestion="Split into separate tests or use @pytest.mark.parametrize",
-                    )
-                )
-                return  # Report once per test
-
     def _check_try_except(self) -> None:
         """Check for try/except blocks in test body."""
         for child in self._walk_test_body():
-            if isinstance(child, ast.Try):
+            # try/finally has no handlers and cannot mask failures
+            if isinstance(child, ast.Try) and child.handlers:
                 self._result.add_issue(
                     Issue(
                         rule="smells.try_except_in_test",
@@ -521,30 +484,3 @@ class SmellVisitor(ast.NodeVisitor):
                     )
                 )
                 return  # Report once per test
-
-    def _check_fixture_overuse(self) -> None:
-        """Check for too many parameters (fixtures)."""
-        node = self._test.node
-        args = node.args
-        # Count all parameters except 'self' and 'cls'
-        param_names = [a.arg for a in args.args if a.arg not in ("self", "cls")]
-        param_count = (
-            len(param_names)
-            + len(args.kwonlyargs)
-            + (1 if args.vararg else 0)
-            + (1 if args.kwarg else 0)
-        )
-        if param_count > 5:
-            self._result.add_issue(
-                Issue(
-                    rule="smells.too_many_fixtures",
-                    message=(
-                        f"Test has {param_count} parameters (fixtures); consider composing fixtures"
-                    ),
-                    severity=Severity.INFO,
-                    file_path=self._test.file_path,
-                    line=self._test.line,
-                    test_name=self._test.name,
-                    suggestion="Combine related fixtures into a composite fixture",
-                )
-            )

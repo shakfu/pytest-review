@@ -242,6 +242,23 @@ def test_patch_ctx():
         patch_issues = [i for i in result.issues if i.rule == "isolation.bare_patch"]
         assert len(patch_issues) == 0
 
+    def test_patch_decorator_not_flagged(self) -> None:
+        """``@mock.patch`` as a decorator guarantees cleanup — not a bare patch."""
+        for decorator in ("@mock.patch", "@patch"):
+            source = f"""
+{decorator}("module.Class.method", return_value=42)
+def test_example():
+    assert True
+"""
+            config = ReviewConfig()
+            analyzer = IsolationStaticAnalyzer(config)
+            test_info = make_test_info(source.strip(), "test_example")
+
+            result = analyzer.analyze(test_info)
+
+            patch_issues = [i for i in result.issues if i.rule == "isolation.bare_patch"]
+            assert len(patch_issues) == 0, f"{decorator} flagged as bare patch"
+
     def test_detects_os_chdir(self) -> None:
         source = """
 def test_chdir():

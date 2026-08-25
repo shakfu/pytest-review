@@ -13,6 +13,26 @@ from pytest_review.reporters.json import JsonReporter
 
 
 class TestJsonReporter:
+    def test_groups_by_analyzer(self) -> None:
+        reporter = JsonReporter()
+        results = [
+            AnalyzerResult(
+                analyzer_name="assertions",
+                issues=[Issue("assertions.missing", "msg", Severity.ERROR)],
+            ),
+            AnalyzerResult(
+                analyzer_name="isolation",
+                issues=[Issue("isolation.env_mutation", "msg", Severity.WARNING)],
+            ),
+        ]
+
+        report = reporter.generate_report(results, total_tests=2, score=70.0)
+
+        assert "assertions" in report.by_analyzer
+        assert "isolation" in report.by_analyzer
+        assert report.by_analyzer["assertions"]["issue_count"] == 1
+        assert report.by_analyzer["isolation"]["issue_count"] == 1
+
     def test_generates_valid_json(self) -> None:
         reporter = JsonReporter()
         results = [
@@ -75,26 +95,6 @@ class TestJsonReporter:
 
         assert report.by_rule["rule.a"] == 2
         assert report.by_rule["rule.b"] == 1
-
-    def test_groups_by_analyzer(self) -> None:
-        reporter = JsonReporter()
-        results = [
-            AnalyzerResult(
-                analyzer_name="assertions",
-                issues=[Issue("assertions.missing", "msg", Severity.ERROR)],
-            ),
-            AnalyzerResult(
-                analyzer_name="naming",
-                issues=[Issue("naming.short", "msg", Severity.WARNING)],
-            ),
-        ]
-
-        report = reporter.generate_report(results, total_tests=2, score=70.0)
-
-        assert "assertions" in report.by_analyzer
-        assert "naming" in report.by_analyzer
-        assert report.by_analyzer["assertions"]["issue_count"] == 1
-        assert report.by_analyzer["naming"]["issue_count"] == 1
 
     def test_writes_to_file(self, tmp_path: Path) -> None:
         reporter = JsonReporter()

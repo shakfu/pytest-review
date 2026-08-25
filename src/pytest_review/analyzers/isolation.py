@@ -61,7 +61,11 @@ class MockPatchVisitor(ast.NodeVisitor):
 
     def __init__(self) -> None:
         self.bare_patches: list[tuple[int, str]] = []
+        # Call nodes that are managed contexts: `with patch(...)` items and
+        # `@patch(...)` / `@mock.patch(...)` decorators (cleanup is guaranteed
+        # by the framework in both cases).
         self._with_context_calls: set[int] = set()
+        self._decorator_calls: set[int] = set()
 
     def visit_With(self, node: ast.With) -> None:
         for item in node.items:
@@ -69,8 +73,21 @@ class MockPatchVisitor(ast.NodeVisitor):
                 self._with_context_calls.add(id(item.context_expr))
         self.generic_visit(node)
 
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._record_decorator_calls(node)
+        self.generic_visit(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._record_decorator_calls(node)
+        self.generic_visit(node)
+
+    def _record_decorator_calls(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        for decorator in node.decorator_list:
+            if isinstance(decorator, ast.Call):
+                self._decorator_calls.add(id(decorator))
+
     def visit_Call(self, node: ast.Call) -> None:
-        if id(node) in self._with_context_calls:
+        if id(node) in self._with_context_calls or id(node) in self._decorator_calls:
             self.generic_visit(node)
             return
         if self._is_patch_call(node):
@@ -225,9 +242,7 @@ class GlobalModificationVisitor(ast.NodeVisitor):
             # sys.path[...] = ... / sys.argv[...] = ...
             if self._is_sys_mutable(node.value):
                 assert isinstance(node.value, ast.Attribute)
-                self.process_mutations.append(
-                    (node.lineno, f"sys.{node.value.attr}[...] = ...")
-                )
+                self.process_mutations.append((node.lineno, f"sys.{node.value.attr}[...] = ..."))
                 self.generic_visit(node)
                 return
             if isinstance(node.value, ast.Attribute) and isinstance(node.value.value, ast.Name):

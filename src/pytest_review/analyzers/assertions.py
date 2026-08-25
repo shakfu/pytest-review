@@ -17,8 +17,50 @@ if TYPE_CHECKING:
     from pytest_review.config import ReviewConfig
 
 
+def _dotted_name(node: ast.expr) -> str:
+    """Return ``a.b.c`` for an attribute chain, or "" when it is not one."""
+    parts: list[str] = []
+    current: ast.expr = node
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if not isinstance(current, ast.Name):
+        return ""
+    parts.append(current.id)
+    return ".".join(reversed(parts))
+
+
+def _patched_targets(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    """Dotted targets this test patches, from decorators and ``with`` items."""
+    targets: set[str] = set()
+
+    def _record(call: ast.Call) -> None:
+        name = _dotted_name(call.func)
+        if not (name == "patch" or name.endswith(".patch")):
+            return
+        if call.args and isinstance(call.args[0], ast.Constant):
+            value = call.args[0].value
+            if isinstance(value, str):
+                targets.add(value)
+
+    for decorator in node.decorator_list:
+        if isinstance(decorator, ast.Call):
+            _record(decorator)
+    for child in ast.walk(node):
+        if isinstance(child, (ast.With, ast.AsyncWith)):
+            for item in child.items:
+                if isinstance(item.context_expr, ast.Call):
+                    _record(item.context_expr)
+    return targets
+
+
 class AssertionVisitor(ast.NodeVisitor):
     """AST visitor that collects assertion information."""
+
+    # Mock assertion methods that are silently truthy when referenced, not called
+    _MOCK_ASSERTIONS = frozenset(
+        {"called", "call_count", "called_once", "called_with", "called_once_with"}
+    )
 
     # pytest helpers that act as assertions (qualified or bare)
     _PYTEST_HELPERS = frozenset({"raises", "warns", "approx"})
@@ -28,34 +70,48 @@ class AssertionVisitor(ast.NodeVisitor):
         self.pytest_assertions: list[ast.Call] = []
         self.helper_assertions: list[ast.Call] = []
         self.trivial_assertions: list[tuple[ast.Assert, str]] = []
-        self.low_value_assertions: list[tuple[ast.Assert, str]] = []
-        self.yoda_conditions: list[tuple[ast.Assert, str]] = []
-        self.raises_without_match: list[tuple[ast.Call, str]] = []
+        self.always_true: list[tuple[ast.Assert, str]] = []
+        self.uncalled_assertions: list[tuple[ast.Assert, str]] = []
 
     def visit_Assert(self, node: ast.Assert) -> None:
         self.assertions.append(node)
         self._check_trivial(node)
-        self._check_low_value(node)
-        self._check_yoda(node)
+        self._check_always_true(node)
+        self._check_uncalled_assertion(node)
         self.generic_visit(node)
+
+    def _check_always_true(self, node: ast.Assert) -> None:
+        """Assertions on objects that are truthy regardless of the data.
+
+        ``assert (x > 0 for x in items)`` asserts on the *generator object*,
+        which is always truthy, so the comparison inside it never runs. Same for
+        a lambda: the function object is asserted, never the call.
+        """
+        test = node.test
+        if isinstance(test, ast.GeneratorExp):
+            self.always_true.append((node, "a generator expression, which is always truthy"))
+        elif isinstance(test, ast.Lambda):
+            self.always_true.append((node, "a lambda, which is always truthy"))
+
+    def _check_uncalled_assertion(self, node: ast.Assert) -> None:
+        """``assert mock.assert_called_once`` -- the method is never called.
+
+        Referencing a bound method is always truthy, so the assertion passes no
+        matter what the mock did. Ruff's PGH005 catches the bare-statement form
+        (``mock.assert_called_once``) but not this one, where it hides inside an
+        ``assert``.
+        """
+        test = node.test
+        if isinstance(test, ast.Attribute) and (
+            test.attr.startswith("assert_") or test.attr in self._MOCK_ASSERTIONS
+        ):
+            self.uncalled_assertions.append((node, test.attr))
 
     def visit_Call(self, node: ast.Call) -> None:
         call_name = self._get_call_name(node.func)
 
         if call_name in self._PYTEST_HELPERS:
             self.pytest_assertions.append(node)
-            # Check for raises() without match= keyword
-            if call_name == "raises":
-                has_match = any(
-                    isinstance(kw.arg, str) and kw.arg == "match" for kw in node.keywords
-                )
-                if not has_match and node.args:
-                    exc_name = ""
-                    if isinstance(node.args[0], ast.Name):
-                        exc_name = node.args[0].id
-                    elif isinstance(node.args[0], ast.Attribute):
-                        exc_name = node.args[0].attr
-                    self.raises_without_match.append((node, exc_name))
         elif self._is_assertion_helper_name(call_name):
             # Mock assertions (mock.assert_called_once, assert_called_with),
             # unittest-style assertions (self.assertEqual, self.assertTrue),
@@ -116,50 +172,9 @@ class AssertionVisitor(ast.NodeVisitor):
             if left == right:
                 self.trivial_assertions.append((node, "comparing value to itself"))
 
-    def _check_low_value(self, node: ast.Assert) -> None:
-        """Check for low-value assertions like isinstance() or 'is not None'."""
-        test = node.test
-        # assert isinstance(x, SomeType)
-        if (
-            isinstance(test, ast.Call)
-            and isinstance(test.func, ast.Name)
-            and test.func.id == "isinstance"
-        ):
-            self.low_value_assertions.append((node, "isinstance check"))
-            return
-        # assert x is not None
-        if (
-            isinstance(test, ast.Compare)
-            and len(test.ops) == 1
-            and isinstance(test.ops[0], ast.IsNot)
-            and isinstance(test.comparators[0], ast.Constant)
-            and test.comparators[0].value is None
-        ):
-            self.low_value_assertions.append((node, "'is not None' check"))
-
-    def _check_yoda(self, node: ast.Assert) -> None:
-        """Check for Yoda conditions like assert 42 == x."""
-        test = node.test
-        if not isinstance(test, ast.Compare):
-            return
-        if len(test.ops) != 1:
-            return
-        if not isinstance(test.ops[0], (ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE)):
-            return
-        left = test.left
-        right = test.comparators[0]
-        # Flag when left is a constant and right is not
-        if isinstance(left, ast.Constant) and not isinstance(right, ast.Constant):
-            # Skip None/True/False -- those are idiomatic on the right with is/is not
-            if left.value is None or left.value is True or left.value is False:
-                return
-            self.yoda_conditions.append((node, f"{left.value!r} == ..."))
-
     @property
     def total_assertions(self) -> int:
-        return (
-            len(self.assertions) + len(self.pytest_assertions) + len(self.helper_assertions)
-        )
+        return len(self.assertions) + len(self.pytest_assertions) + len(self.helper_assertions)
 
 
 class AssertionsAnalyzer(StaticAnalyzer):
@@ -219,48 +234,84 @@ class AssertionsAnalyzer(StaticAnalyzer):
                 )
             )
 
-        # Check for low-value assertions
-        for assert_node, reason in visitor.low_value_assertions:
+        for assert_node, what in visitor.always_true:
             result.add_issue(
                 Issue(
-                    rule="assertions.low_value",
-                    message=f"Low-value assertion: {reason}",
-                    severity=Severity.INFO,
+                    rule="assertions.always_true",
+                    message=f"Assertion is on {what}; it cannot fail",
+                    severity=Severity.ERROR,
                     file_path=test.file_path,
                     line=assert_node.lineno,
                     test_name=test.name,
-                    suggestion="Assert on actual values rather than types or existence",
+                    suggestion="Wrap in all()/any(), or assert the materialised list",
                 )
             )
 
-        # Check for pytest.raises without match=
-        for call_node, exc_name in visitor.raises_without_match:
+        for assert_node, attr in visitor.uncalled_assertions:
             result.add_issue(
                 Issue(
-                    rule="assertions.raises_without_match",
+                    rule="assertions.uncalled_assertion",
                     message=(
-                        f"pytest.raises({exc_name}) without match= "
-                        f"does not verify the exception message"
+                        f"'{attr}' is referenced but never called, so the assertion "
+                        f"is always true"
+                    ),
+                    severity=Severity.ERROR,
+                    file_path=test.file_path,
+                    line=assert_node.lineno,
+                    test_name=test.name,
+                    suggestion=f"Call it: {attr}(...)",
+                )
+            )
+
+        # A test that asserts on a direct call to something it patched is
+        # verifying unittest.mock, not the code under test: the patched object's
+        # behaviour is entirely defined by the test itself.
+        patched = _patched_targets(test.node)
+        if patched:
+            for assert_node in visitor.assertions:
+                for call in (n for n in ast.walk(assert_node) if isinstance(n, ast.Call)):
+                    called = _dotted_name(call.func)
+                    if not called:
+                        continue
+                    if any(
+                        called == target or target.endswith(f".{called}") for target in patched
+                    ):
+                        result.add_issue(
+                            Issue(
+                                rule="assertions.mock_tautology",
+                                message=(
+                                    f"Assertion calls '{called}', which this test patched; "
+                                    f"it verifies the mock, not the code under test"
+                                ),
+                                severity=Severity.ERROR,
+                                file_path=test.file_path,
+                                line=assert_node.lineno,
+                                test_name=test.name,
+                                suggestion=(
+                                    "Assert on the code that *uses* the patched dependency"
+                                ),
+                            )
+                        )
+                        break
+
+        # Check assertion-to-logic ratio. A test whose body is almost all setup
+        # and almost no verification is a defect signal, not a style opinion:
+        # it is doing work nobody checks.
+        statement_count = sum(1 for node in ast.walk(test.node) if isinstance(node, ast.stmt))
+        total = visitor.total_assertions
+        if statement_count >= 10 and total > 0 and total / statement_count < 0.1:
+            result.add_issue(
+                Issue(
+                    rule="assertions.low_ratio",
+                    message=(
+                        f"Low assertion-to-logic ratio: {total} assertion(s) "
+                        f"across {statement_count} statements"
                     ),
                     severity=Severity.INFO,
                     file_path=test.file_path,
-                    line=call_node.lineno,
+                    line=test.line,
                     test_name=test.name,
-                    suggestion="Add match= to verify the exception message",
-                )
-            )
-
-        # Check for Yoda conditions
-        for assert_node, reason in visitor.yoda_conditions:
-            result.add_issue(
-                Issue(
-                    rule="assertions.yoda_condition",
-                    message=f"Yoda condition: {reason}",
-                    severity=Severity.INFO,
-                    file_path=test.file_path,
-                    line=assert_node.lineno,
-                    test_name=test.name,
-                    suggestion="Put the expected value on the right: assert x == 42",
+                    suggestion="Test has too much setup/logic relative to what it verifies",
                 )
             )
 

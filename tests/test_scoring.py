@@ -146,6 +146,97 @@ class TestScoringEngine:
         assert len(critical_breakdown.penalties) == 1
         assert critical_breakdown.penalties[0][0] == "assertions.missing"
 
+    def test_single_empty_test_does_not_tank_a_large_suite(self) -> None:
+        """One bad test in a healthy suite is a rounding error, not a grade drop.
+
+        Critical penalties must scale with the *fraction* of tests affected;
+        otherwise the score measures suite size rather than suite quality.
+        """
+        engine = ScoringEngine()
+        results = [
+            AnalyzerResult(
+                analyzer_name="assertions",
+                issues=[
+                    Issue(
+                        "assertions.missing",
+                        "no assertions",
+                        Severity.ERROR,
+                        test_name="test_empty",
+                    )
+                ],
+            )
+        ]
+
+        breakdown = engine.calculate_score(results, total_tests=100)
+
+        assert breakdown.total_score > 95.0
+        assert breakdown.grade == "A"
+
+    def test_wholly_broken_suite_scores_zero_at_any_size(self) -> None:
+        """A suite in which every test is empty must score exactly 0, however large.
+
+        This pins the *ceiling* of the penalty model. Normalizing penalties by
+        suite size is only correct if a fully-defective suite still bottoms
+        out; otherwise the score loses the ability to express "bad" at all.
+
+        Zero rather than merely "an F" is the point: the critical penalty for
+        ``assertions.missing`` is defined as the score remaining once the
+        assertions category is wiped out, so a suite that verifies nothing
+        lands on 0 by construction rather than by a chosen constant.
+        """
+        engine = ScoringEngine()
+
+        for total_tests in (1, 10, 100, 1000):
+            results = [
+                AnalyzerResult(
+                    analyzer_name="assertions",
+                    issues=[
+                        Issue(
+                            "assertions.missing",
+                            "no assertions",
+                            Severity.ERROR,
+                            test_name=f"test_{i}",
+                        )
+                    ],
+                )
+                for i in range(total_tests)
+            ]
+
+            breakdown = engine.calculate_score(results, total_tests=total_tests)
+
+            assert breakdown.total_score == 0.0, (
+                f"{total_tests} empty tests scored {breakdown.total_score:.1f} "
+                f"({breakdown.grade}); a suite that verifies nothing must score 0"
+            )
+            assert breakdown.grade == "F"
+
+    def test_one_test_cannot_consume_the_whole_suite_budget(self) -> None:
+        """A single test's penalty saturates: it forfeits its share, not the suite's.
+
+        Without saturation, one test carrying many findings outweighs tests that
+        are perfectly fine, and the score stops tracking the *proportion* of the
+        suite that is defective.
+        """
+        engine = ScoringEngine()
+
+        def one_test_with(issues: list[Issue]) -> float:
+            results = [AnalyzerResult(analyzer_name="assertions", issues=issues)]
+            return engine.calculate_score(results, total_tests=10).total_score
+
+        many_warnings = one_test_with(
+            [
+                Issue("smells.a", "m", Severity.WARNING, test_name="test_bad")
+                for _ in range(5)
+            ]
+        )
+        single_error = one_test_with(
+            [Issue("assertions.weak", "m", Severity.ERROR, test_name="test_bad")]
+        )
+
+        # Five warnings on one test saturate at the same ceiling as one error:
+        # that test is already contributing everything it can.
+        assert many_warnings == single_error
+
     def test_score_to_grade_boundaries(self) -> None:
         engine = ScoringEngine()
 
@@ -213,20 +304,18 @@ class TestScoringEngine:
                 issues=[Issue("assertions.missing", "msg", Severity.ERROR)],
             ),
             AnalyzerResult(
-                analyzer_name="naming",
-                issues=[Issue("naming.short", "msg", Severity.WARNING)],
+                analyzer_name="smells",
+                issues=[Issue("smells.early_return", "msg", Severity.WARNING)],
             ),
             AnalyzerResult(
-                analyzer_name="complexity",
-                issues=[Issue("complexity.high", "msg", Severity.INFO)],
+                analyzer_name="patterns",
+                issues=[Issue("patterns.sleep_in_test", "msg", Severity.WARNING)],
             ),
         ]
 
         breakdown = engine.calculate_score(results, total_tests=3)
 
-        # Score should be reduced from 100
         assert breakdown.total_score < 100.0
-        # Should have issues from all analyzers
         assert breakdown.total_issues == 3
 
     def test_breakdown_includes_all_categories(self) -> None:

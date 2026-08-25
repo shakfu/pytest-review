@@ -21,6 +21,18 @@ class TestAnalyzerConfig:
 
 
 class TestReviewConfig:
+    def test_from_dict(self, sample_pyproject_config: dict[str, Any]) -> None:
+        config = ReviewConfig.from_dict(sample_pyproject_config)
+
+        assert config.enabled is True
+        assert config.strict is False
+        assert config.min_score == 70
+        assert "assertions" in config.analyzers
+        assert "smells" in config.analyzers
+        assert "patterns" in config.analyzers
+        assert config.ignore_paths == ["tests/legacy/*"]
+        assert config.ignore_rules == ["patterns.hardcoded_path"]
+
     def test_default_values(self) -> None:
         config = ReviewConfig()
         assert config.enabled is True
@@ -45,18 +57,6 @@ class TestReviewConfig:
         with pytest.raises(ValueError, match="min_severity"):
             ReviewConfig(min_severity="critical")
 
-    def test_from_dict(self, sample_pyproject_config: dict[str, Any]) -> None:
-        config = ReviewConfig.from_dict(sample_pyproject_config)
-
-        assert config.enabled is True
-        assert config.strict is False
-        assert config.min_score == 70
-        assert "assertions" in config.analyzers
-        assert "naming" in config.analyzers
-        assert "complexity" in config.analyzers
-        assert config.ignore_paths == ["tests/legacy/*"]
-        assert config.ignore_rules == ["naming.docstring"]
-
     def test_get_analyzer_config_existing(self, sample_pyproject_config: dict[str, Any]) -> None:
         config = ReviewConfig.from_dict(sample_pyproject_config)
         analyzer_config = config.get_analyzer_config("assertions")
@@ -75,7 +75,7 @@ class TestReviewConfig:
         config = ReviewConfig.from_dict(sample_pyproject_config)
 
         assert config.is_analyzer_enabled("assertions") is True
-        assert config.is_analyzer_enabled("complexity") is False
+        assert config.is_analyzer_enabled("patterns") is False
         assert config.is_analyzer_enabled("nonexistent") is True  # default
 
     def test_get_analyzer_option(self, sample_pyproject_config: dict[str, Any]) -> None:
@@ -83,7 +83,7 @@ class TestReviewConfig:
 
         assert config.get_analyzer_option("assertions", "min_assertions") == 1
         assert config.get_analyzer_option("assertions", "nonexistent", 42) == 42
-        assert config.get_analyzer_option("naming", "min_length") == 10
+        assert config.get_analyzer_option("smells", "max_assertions_without_message") == 4
 
     def test_from_pyproject_missing_file(self, tmp_path: Path) -> None:
         config = ReviewConfig.from_pyproject(tmp_path / "nonexistent.toml")

@@ -33,10 +33,10 @@ class TestParseSuppressedRules:
     def test_multiple_comments(self) -> None:
         source = (
             "# review: ignore[assertions.trivial]\n"
-            "def test_x():  # review: ignore[naming.too_short]\n"
+            "def test_x():  # review: ignore[smells.early_return]\n"
             "    assert True\n"
         )
-        assert parse_suppressed_rules(source) == {"assertions.trivial", "naming.too_short"}
+        assert parse_suppressed_rules(source) == {"assertions.trivial", "smells.early_return"}
 
     def test_whitespace_tolerance(self) -> None:
         source = "#  review:  ignore[ foo.bar , baz.qux ]\ndef test_x(): pass\n"
@@ -76,7 +76,7 @@ class TestInlineSuppressionInAnalyzer:
 
     def test_non_suppressed_rules_remain(self) -> None:
         source = "def test_example():\n    pass\n"
-        test_info = self._make_test_info(source, suppressed={"naming.too_short"})
+        test_info = self._make_test_info(source, suppressed={"smells.early_return"})
 
         config = ReviewConfig()
         analyzer = AssertionsAnalyzer(config)
@@ -112,7 +112,7 @@ class TestInlineSuppressionIntegration:
 
     def test_non_suppressed_issues_still_reported(self, pytester: pytest.Pytester) -> None:
         pytester.makepyfile("""
-            # review: ignore[naming.too_short]
+            # review: ignore[smells.early_return]
             def test_empty():
                 pass
         """)
@@ -123,12 +123,10 @@ class TestInlineSuppressionIntegration:
 
     def test_multiple_rules_suppressed(self, pytester: pytest.Pytester) -> None:
         pytester.makepyfile("""
-            # review: ignore[assertions.trivial,naming.too_short]
+            # review: ignore[assertions.trivial,smells.early_return]
             def test_x():
                 assert True
         """)
-        result = pytester.runpytest("--review", "--review-only=assertions,naming")
+        result = pytester.runpytest("--review", "--review-only=assertions,smells")
         result.assert_outcomes(passed=1)
-        output = result.stdout.str()
-        assert "assertions.trivial" not in output
-        assert "naming.too_short" not in output
+        assert "assertions.trivial" not in result.stdout.str()

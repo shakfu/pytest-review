@@ -22,25 +22,6 @@ class AssertionsConfig:
 
 
 @dataclass
-class NamingConfig:
-    """Typed configuration for the naming analyzer."""
-
-    enabled: bool = True
-    min_length: int = 10
-    require_docstring: bool = False
-
-
-@dataclass
-class ComplexityConfig:
-    """Typed configuration for the complexity analyzer."""
-
-    enabled: bool = True
-    max_statements: int = 20
-    max_depth: int = 3
-    max_complexity: int = 5
-
-
-@dataclass
 class PatternsConfig:
     """Typed configuration for the patterns analyzer."""
 
@@ -68,7 +49,7 @@ class SmellsConfig:
     """Typed configuration for the smells analyzer."""
 
     enabled: bool = True
-    max_assertions_without_message: int = 1
+    max_assertions_without_message: int = 4
     check_magic_numbers: bool = True
     check_eager_test: bool = True
 
@@ -167,25 +148,6 @@ class ReviewConfig:
             min_assertions=int(raw.options.get("min_assertions", 1)),
         )
 
-    def get_naming_config(self) -> NamingConfig:
-        """Get typed configuration for the naming analyzer."""
-        raw = self.get_analyzer_config("naming")
-        return NamingConfig(
-            enabled=raw.enabled,
-            min_length=int(raw.options.get("min_length", 10)),
-            require_docstring=bool(raw.options.get("require_docstring", False)),
-        )
-
-    def get_complexity_config(self) -> ComplexityConfig:
-        """Get typed configuration for the complexity analyzer."""
-        raw = self.get_analyzer_config("complexity")
-        return ComplexityConfig(
-            enabled=raw.enabled,
-            max_statements=int(raw.options.get("max_statements", 20)),
-            max_depth=int(raw.options.get("max_depth", 3)),
-            max_complexity=int(raw.options.get("max_complexity", 5)),
-        )
-
     def get_patterns_config(self) -> PatternsConfig:
         """Get typed configuration for the patterns analyzer."""
         raw = self.get_analyzer_config("patterns")
@@ -211,7 +173,7 @@ class ReviewConfig:
         return SmellsConfig(
             enabled=raw.enabled,
             max_assertions_without_message=int(
-                raw.options.get("max_assertions_without_message", 1)
+                raw.options.get("max_assertions_without_message", 4)
             ),
             check_magic_numbers=bool(raw.options.get("check_magic_numbers", True)),
             check_eager_test=bool(raw.options.get("check_eager_test", True)),

@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from pytest_review.config import (
     AssertionsConfig,
-    ComplexityConfig,
     IsolationConfig,
-    NamingConfig,
     PatternsConfig,
     PerformanceConfig,
     ReviewConfig,
@@ -22,22 +20,7 @@ class TestTypedConfigDefaults:
         assert typed.enabled is True
         assert typed.min_assertions == 1
 
-    def test_naming_config_defaults(self) -> None:
-        config = ReviewConfig()
-        typed = config.get_naming_config()
-        assert isinstance(typed, NamingConfig)
-        assert typed.enabled is True
-        assert typed.min_length == 10
-        assert typed.require_docstring is False
 
-    def test_complexity_config_defaults(self) -> None:
-        config = ReviewConfig()
-        typed = config.get_complexity_config()
-        assert isinstance(typed, ComplexityConfig)
-        assert typed.enabled is True
-        assert typed.max_statements == 20
-        assert typed.max_depth == 3
-        assert typed.max_complexity == 5
 
     def test_patterns_config_defaults(self) -> None:
         config = ReviewConfig()
@@ -64,7 +47,7 @@ class TestTypedConfigDefaults:
         typed = config.get_smells_config()
         assert isinstance(typed, SmellsConfig)
         assert typed.enabled is True
-        assert typed.max_assertions_without_message == 1
+        assert typed.max_assertions_without_message == 4
         assert typed.check_magic_numbers is True
         assert typed.check_eager_test is True
 
@@ -77,30 +60,7 @@ class TestTypedConfigFromDict:
         typed = config.get_assertions_config()
         assert typed.min_assertions == 3
 
-    def test_naming_config_from_dict(self) -> None:
-        config = ReviewConfig.from_dict(
-            {"analyzers": {"naming": {"min_length": 15, "require_docstring": True}}}
-        )
-        typed = config.get_naming_config()
-        assert typed.min_length == 15
-        assert typed.require_docstring is True
 
-    def test_complexity_config_from_dict(self) -> None:
-        config = ReviewConfig.from_dict(
-            {
-                "analyzers": {
-                    "complexity": {
-                        "max_statements": 30,
-                        "max_depth": 5,
-                        "max_complexity": 10,
-                    }
-                }
-            }
-        )
-        typed = config.get_complexity_config()
-        assert typed.max_statements == 30
-        assert typed.max_depth == 5
-        assert typed.max_complexity == 10
 
     def test_performance_config_from_dict(self) -> None:
         config = ReviewConfig.from_dict(
@@ -136,8 +96,8 @@ class TestTypedConfigFromDict:
 
     def test_disabled_analyzer_config(self) -> None:
         config = ReviewConfig.from_dict(
-            {"analyzers": {"complexity": {"enabled": False, "max_statements": 50}}}
+            {"analyzers": {"smells": {"enabled": False, "max_assertions_without_message": 9}}}
         )
-        typed = config.get_complexity_config()
+        typed = config.get_smells_config()
         assert typed.enabled is False
-        assert typed.max_statements == 50
+        assert typed.max_assertions_without_message == 9

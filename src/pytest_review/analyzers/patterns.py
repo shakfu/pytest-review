@@ -32,39 +32,16 @@ class PatternVisitor(ast.NodeVisitor):
                 self._with_context_calls.add(id(item.context_expr))
         self.generic_visit(node)
 
-    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
-        # Check for bare except
-        if node.type is None:
-            self.issues.append(
-                (
-                    node.lineno,
-                    "patterns.bare_except",
-                    "Bare 'except:' clause catches all exceptions including KeyboardInterrupt",
-                    Severity.WARNING,
-                    "Specify the exception type, e.g., 'except Exception:'",
-                )
-            )
-        # Check for except Exception with pass
-        if (
-            node.type
-            and isinstance(node.type, ast.Name)
-            and node.type.id == "Exception"
-            and len(node.body) == 1
-            and isinstance(node.body[0], ast.Pass)
-        ):
-            self.issues.append(
-                (
-                    node.lineno,
-                    "patterns.swallowed_exception",
-                    "Exception is caught and silently ignored",
-                    Severity.WARNING,
-                    "Log the exception or re-raise if appropriate",
-                )
-            )
-        self.generic_visit(node)
-
     def visit_Call(self, node: ast.Call) -> None:
         func = node.func
+
+        # Check for hardcoded absolute paths passed to path-consuming calls
+        if self._is_path_consuming(func):
+            for arg in node.args:
+                self._check_hardcoded_path_arg(arg)
+            for kw in node.keywords:
+                if kw.arg in ("path", "name", "src", "dst", "target", "file"):
+                    self._check_hardcoded_path_arg(kw.value)
 
         # Check for time.sleep()
         if (
@@ -80,34 +57,6 @@ class PatternVisitor(ast.NodeVisitor):
                     "time.sleep() in test makes it slow and potentially flaky",
                     Severity.WARNING,
                     "Use mocking or async patterns instead of sleeping",
-                )
-            )
-
-        # Check for print() statements
-        if isinstance(func, ast.Name) and func.id == "print":
-            self.issues.append(
-                (
-                    node.lineno,
-                    "patterns.print_statement",
-                    "print() statement in test - use logging or assertions instead",
-                    Severity.INFO,
-                    "Remove print or use proper logging/capfd fixture",
-                )
-            )
-
-        # Check for open() without context manager
-        if (
-            isinstance(func, ast.Name)
-            and func.id == "open"
-            and id(node) not in self._with_context_calls
-        ):
-            self.issues.append(
-                (
-                    node.lineno,
-                    "patterns.open_without_context",
-                    "open() should be used with a context manager (with statement)",
-                    Severity.INFO,
-                    "Use 'with open(...) as f:' to ensure file is properly closed",
                 )
             )
 
@@ -129,26 +78,6 @@ class PatternVisitor(ast.NodeVisitor):
                         "Add check=True to raise on non-zero exit codes",
                     )
                 )
-
-        # Check for pytest.raises(Exception) - overly broad
-        if (
-            isinstance(func, ast.Attribute)
-            and func.attr == "raises"
-            and isinstance(func.value, ast.Name)
-            and func.value.id == "pytest"
-            and node.args
-            and isinstance(node.args[0], ast.Name)
-            and node.args[0].id == "Exception"
-        ):
-            self.issues.append(
-                (
-                    node.lineno,
-                    "patterns.broad_raises",
-                    "pytest.raises(Exception) is too broad; use a specific exception type",
-                    Severity.WARNING,
-                    "Specify the exact exception, e.g., pytest.raises(ValueError)",
-                )
-            )
 
         # Check for os.system() or subprocess without proper handling
         if (
@@ -193,8 +122,8 @@ class PatternVisitor(ast.NodeVisitor):
                     (
                         node.lineno,
                         "patterns.slow_call",
-                        f"{module}.{method}() may perform network I/O without mocking",
-                        Severity.INFO,
+                        f"{module}.{method}() performs network I/O without mocking",
+                        Severity.WARNING,
                         "Mock network calls or use a fixture to avoid slow/flaky tests",
                     )
                 )
@@ -213,7 +142,7 @@ class PatternVisitor(ast.NodeVisitor):
                     node.lineno,
                     "patterns.slow_call",
                     "urllib.request.urlopen() performs network I/O",
-                    Severity.INFO,
+                    Severity.WARNING,
                     "Mock network calls or use a fixture to avoid slow/flaky tests",
                 )
             )
@@ -230,135 +159,60 @@ class PatternVisitor(ast.NodeVisitor):
                     node.lineno,
                     "patterns.slow_call",
                     f"{func.value.id}.{func.attr}() may perform database I/O",
+                    # Kept at INFO: this matches on variable *names*, not a known
+                    # API, so it is a guess in a way the network checks are not.
                     Severity.INFO,
                     "Use a test database fixture or mock DB calls",
                 )
             )
 
-    def visit_Constant(self, node: ast.Constant) -> None:
-        # Check for hardcoded paths (basic heuristic)
-        if isinstance(node.value, str):
-            value = node.value
-            # Check for absolute paths
-            if value.startswith("/") and len(value) > 5 and "/" in value[1:]:
-                # Looks like an absolute path
-                if any(
-                    p in value.lower() for p in ["/home/", "/users/", "/tmp/", "/var/", "/etc/"]
-                ):
-                    display = f"{value[:50]}..." if len(value) > 50 else value
-                    self.issues.append(
-                        (
-                            node.lineno,
-                            "patterns.hardcoded_path",
-                            f"Hardcoded absolute path: '{display}'",
-                            Severity.WARNING,
-                            "Use tmp_path fixture or pathlib for cross-platform paths",
-                        )
-                    )
-            # Windows paths
-            elif len(value) > 3 and value[1:3] == ":\\":
-                self.issues.append(
-                    (
-                        node.lineno,
-                        "patterns.hardcoded_path",
-                        "Hardcoded Windows path detected",
-                        Severity.WARNING,
-                        "Use tmp_path fixture or pathlib for cross-platform paths",
-                    )
-                )
-        self.generic_visit(node)
+    # modules whose methods take filesystem paths
+    _PATH_MODULES = frozenset({"os", "shutil", "glob", "tempfile"})
 
-    def visit_Import(self, node: ast.Import) -> None:
-        for alias in node.names:
-            if alias.name == "mock":
-                self.issues.append(
-                    (
-                        node.lineno,
-                        "patterns.legacy_mock",
-                        "Using 'import mock' - prefer unittest.mock (built-in since Python 3.3)",
-                        Severity.INFO,
-                        "Use 'from unittest.mock import Mock, patch' instead",
-                    )
-                )
-        self.generic_visit(node)
-
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        if node.module == "mock":
-            self.issues.append(
-                (
-                    node.lineno,
-                    "patterns.legacy_mock",
-                    "Using 'from mock import' - prefer unittest.mock",
-                    Severity.INFO,
-                    "Use 'from unittest.mock import ...' instead",
-                )
-            )
-        self.generic_visit(node)
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self._check_mutable_defaults(node)
-        self.generic_visit(node)
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self._check_mutable_defaults(node)
-        self.generic_visit(node)
-
-    def _check_mutable_defaults(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
-        """Check for mutable default arguments like def f(items=[])."""
-        for default in node.args.defaults + node.args.kw_defaults:
-            if default is None:
-                continue
-            if isinstance(default, (ast.List, ast.Dict, ast.Set)):
-                self.issues.append(
-                    (
-                        default.lineno,
-                        "patterns.mutable_default",
-                        "Mutable default argument (shared between calls)",
-                        Severity.WARNING,
-                        "Use None as default and create inside the function",
-                    )
-                )
-            elif (
-                isinstance(default, ast.Call)
-                and isinstance(default.func, ast.Name)
-                and default.func.id in ("list", "dict", "set")
+    def _is_path_consuming(self, func: ast.expr) -> bool:
+        """True when *func* is a call target that consumes filesystem paths."""
+        if isinstance(func, ast.Name):
+            return func.id in ("open", "Path")
+        if isinstance(func, ast.Attribute):
+            if isinstance(func.value, ast.Name):
+                return func.value.id in self._PATH_MODULES
+            # os.path.join / os.path.abspath / ...
+            if (
+                isinstance(func.value, ast.Attribute)
+                and isinstance(func.value.value, ast.Name)
+                and func.value.value.id == "os"
+                and func.value.attr == "path"
             ):
-                self.issues.append(
-                    (
-                        default.lineno,
-                        "patterns.mutable_default",
-                        f"Mutable default argument: {default.func.id}()",
-                        Severity.WARNING,
-                        "Use None as default and create inside the function",
-                    )
-                )
+                return True
+        return False
+
+    @staticmethod
+    def _looks_like_absolute_path(value: str) -> bool:
+        """True for strings that look like an absolute filesystem path."""
+        if value.startswith("/") and len(value) > 5 and "/" in value[1:]:
+            return any(p in value.lower() for p in ["/home/", "/users/", "/tmp/", "/var/", "/etc/"])
+        # Windows paths:  C:\...  or  C:/...
+        return len(value) > 3 and value[1] == ":" and value[2] in ("\\", "/")
+
+    def _check_hardcoded_path_arg(self, arg: ast.expr) -> None:
+        """Flag a string constant argument that is an absolute path."""
+        if not (isinstance(arg, ast.Constant) and isinstance(arg.value, str)):
+            return
+        value = arg.value
+        if not self._looks_like_absolute_path(value):
+            return
+        display = f"{value[:50]}..." if len(value) > 50 else value
+        self.issues.append(
+            (
+                arg.lineno,
+                "patterns.hardcoded_path",
+                f"Hardcoded absolute path: '{display}'",
+                Severity.INFO,
+                "Use tmp_path fixture or pathlib for cross-platform paths",
+            )
+        )
 
     def visit_Assign(self, node: ast.Assign) -> None:
-        self.generic_visit(node)
-
-    def visit_Compare(self, node: ast.Compare) -> None:
-        # Check for 'is' comparison with literals
-        for i, op in enumerate(node.ops):
-            if isinstance(op, (ast.Is, ast.IsNot)):
-                comparator = node.comparators[i] if i < len(node.comparators) else None
-                left = node.left if i == 0 else node.comparators[i - 1]
-
-                for operand in [left, comparator]:
-                    if (
-                        isinstance(operand, ast.Constant)
-                        and isinstance(operand.value, (int, str, float))
-                        and operand.value not in (True, False, None)
-                    ):
-                        self.issues.append(
-                            (
-                                node.lineno,
-                                "patterns.is_literal",
-                                "Using 'is' with literal - use '==' instead",
-                                Severity.WARNING,
-                                "'is' compares identity, not equality; use '=='",
-                            )
-                        )
-                        break
         self.generic_visit(node)
 
 

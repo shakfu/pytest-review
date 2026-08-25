@@ -1,5 +1,8 @@
 # TODO
 
+> **Note (0.2.0):** the rule set was re-scoped as a defect finder that complements ruff. Some items > checked off below were subsequently *removed* -- either because ruff covers them (broad > `pytest.raises`, bare `except`, `is` with a literal, mutable defaults, print statements) or because > they were style opinions rather than defects (naming conventions, magic numbers, assertion counts, > eager tests). The "signal-to-noise" tiers here predate that decision; treat them as history rather > than a plan. See CHANGELOG.md for what actually ships.
+
+
 Potential improvements to test quality heuristics, organized by analyzer.
 
 ## High signal-to-noise (implement first)

@@ -7,8 +7,11 @@ from pathlib import Path
 import pytest
 
 from pytest_review.analyzers.base import AnalyzerResult, Issue, Severity
+from pytest_review.config import ReviewConfig
 from pytest_review.plugin import (
+    ReviewPlugin,
     _deserialize_results,
+    _get_static_analyzer_classes,
     _serialize_results,
 )
 
@@ -51,15 +54,21 @@ class TestResultSerialization:
         assert issue.test_name == "test_empty"
         assert issue.suggestion == "Add at least one assertion"
 
+    def test_round_trip_empty_results(self) -> None:
+        serialized = _serialize_results([])
+        restored = _deserialize_results(serialized)
+        assert restored == []
+
+
     def test_round_trip_with_no_file_path(self) -> None:
         original = [
             AnalyzerResult(
-                analyzer_name="naming",
+                analyzer_name="smells",
                 issues=[
                     Issue(
-                        rule="naming.too_short",
-                        message="Name is too short",
-                        severity=Severity.INFO,
+                        rule="smells.early_return",
+                        message="Test contains a return",
+                        severity=Severity.WARNING,
                     ),
                 ],
             )
@@ -69,11 +78,6 @@ class TestResultSerialization:
 
         assert restored[0].issues[0].file_path is None
         assert restored[0].issues[0].line is None
-
-    def test_round_trip_empty_results(self) -> None:
-        serialized = _serialize_results([])
-        restored = _deserialize_results(serialized)
-        assert restored == []
 
     def test_round_trip_multiple_results(self) -> None:
         original = [
@@ -90,11 +94,11 @@ class TestResultSerialization:
                 ],
             ),
             AnalyzerResult(
-                analyzer_name="naming",
+                analyzer_name="isolation",
                 issues=[
                     Issue(
-                        rule="naming.non_descriptive",
-                        message="Non-descriptive name",
+                        rule="isolation.global_modification",
+                        message="Modifies global state",
                         severity=Severity.WARNING,
                         file_path=Path("/test.py"),
                         line=5,
@@ -108,7 +112,7 @@ class TestResultSerialization:
 
         assert len(restored) == 2
         assert restored[0].analyzer_name == "assertions"
-        assert restored[1].analyzer_name == "naming"
+        assert restored[1].analyzer_name == "isolation"
         assert restored[0].issues[0].severity == Severity.ERROR
         assert restored[1].issues[0].severity == Severity.WARNING
 
@@ -121,25 +125,18 @@ class TestResultSerialization:
                 analyzer_name="patterns",
                 issues=[
                     Issue(
-                        rule="patterns.print_statement",
-                        message="print() in test",
-                        severity=Severity.INFO,
+                        rule="patterns.sleep_in_test",
+                        message="time.sleep() in test",
+                        severity=Severity.WARNING,
                         file_path=Path("/a/b.py"),
                         line=1,
-                        test_name="test_x",
-                        suggestion="Remove print",
                     ),
                 ],
-                score=95.0,
-                metadata={"pattern_issues": 1},
             )
         ]
         serialized = _serialize_results(original)
-        # Must not raise
-        dumped = json.dumps(serialized)
-        loaded = json.loads(dumped)
-        restored = _deserialize_results(loaded)
-        assert restored[0].issues[0].rule == "patterns.print_statement"
+
+        assert json.loads(json.dumps(serialized)) == serialized
 
 
 class TestIncrementalCache:
@@ -152,12 +149,12 @@ class TestIncrementalCache:
                 assert True
         """)
         # First run populates cache
-        result1 = pytester.runpytest("--review")
+        result1 = pytester.runpytest("--review", "--review-min-score=1")
         result1.assert_outcomes(passed=1)
         assert "pytest-review" in result1.stdout.str()
 
         # Second run should produce identical output (from cache)
-        result2 = pytester.runpytest("--review")
+        result2 = pytester.runpytest("--review", "--review-min-score=1")
         result2.assert_outcomes(passed=1)
         assert "pytest-review" in result2.stdout.str()
 
@@ -175,7 +172,7 @@ class TestIncrementalCache:
             def test_1():
                 assert True
         """)
-        result1 = pytester.runpytest("--review")
+        result1 = pytester.runpytest("--review", "--review-min-score=1")
         assert "Trivial assertion" in result1.stdout.str()
 
         # Modify the file to fix the trivial assertion
@@ -185,7 +182,7 @@ class TestIncrementalCache:
             '    assert result == 2\n',
             encoding="utf-8",
         )
-        result2 = pytester.runpytest("--review")
+        result2 = pytester.runpytest("--review", "--review-min-score=1")
         # The trivial assertion issue should no longer appear
         assert "Trivial assertion" not in result2.stdout.str()
 
@@ -203,10 +200,10 @@ class TestIncrementalCache:
         """
         pytester.makepyfile(test_alpha=body, test_beta=body)
 
-        first = pytester.runpytest("--review")
+        first = pytester.runpytest("--review", "--review-min-score=1")
         first.assert_outcomes(passed=2)
 
-        second = pytester.runpytest("--review")
+        second = pytester.runpytest("--review", "--review-min-score=1")
         second.assert_outcomes(passed=2)
 
         for result in (first, second):
@@ -231,9 +228,9 @@ class TestIncrementalCache:
                     return line.strip()
             raise AssertionError("Overall Score line missing from output")
 
-        uncached = pytester.runpytest("--review", "--review-no-cache")
-        pytester.runpytest("--review")  # populate cache
-        cached = pytester.runpytest("--review")
+        uncached = pytester.runpytest("--review", "--review-no-cache", "--review-min-score=1")
+        pytester.runpytest("--review", "--review-min-score=1")  # populate cache
+        cached = pytester.runpytest("--review", "--review-min-score=1")
 
         assert extract_score(cached.stdout.str()) == extract_score(uncached.stdout.str())
 
@@ -259,6 +256,102 @@ class TestIncrementalCache:
         result.assert_outcomes(passed=1)
         assert "pytest-review" in result.stdout.str()
         assert "Trivial assertion" in result.stdout.str()
+
+
+class TestCacheKeyCoversAnalysisInputs:
+    """The cache key must cover everything that can change findings.
+
+    Keying only on file contents and *explicitly set* options means an upgrade,
+    or any change to a rule's default threshold, silently serves the previous
+    version's findings for every unchanged file until someone runs
+    ``--cache-clear``. Nothing warns that the output is stale.
+    """
+
+    def test_resolved_settings_include_unset_defaults(self) -> None:
+        """Defaults must appear in the key material, not just overridden values."""
+        resolved = ReviewPlugin._resolved_analyzer_settings(ReviewConfig())
+
+        smells = resolved["get_smells_config"]
+        assert "max_assertions_without_message" in smells
+        assert smells["max_assertions_without_message"] == (
+            ReviewConfig().get_smells_config().max_assertions_without_message
+        )
+
+    def test_resolved_settings_track_a_changed_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Changing a default must change the key material."""
+        before = ReviewPlugin._resolved_analyzer_settings(ReviewConfig())
+
+        original = ReviewConfig.get_smells_config
+
+        def patched(self: ReviewConfig) -> object:
+            cfg = original(self)
+            cfg.max_assertions_without_message += 1
+            return cfg
+
+        monkeypatch.setattr(ReviewConfig, "get_smells_config", patched)
+        after = ReviewPlugin._resolved_analyzer_settings(ReviewConfig())
+
+        assert before != after
+
+    @staticmethod
+    def _hash_with_default_config() -> str:
+        """``_get_config_hash`` for a default config, without a live session."""
+        plugin = object.__new__(ReviewPlugin)
+        plugin.review_config = ReviewConfig()
+        return plugin._get_config_hash(["smells"])
+
+    def test_config_hash_changes_when_a_rule_default_changes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The resolved defaults must reach the key, not merely be computable.
+
+        This is the end of the wiring the other tests only check in pieces: it
+        fails if ``_get_config_hash`` stops folding the resolved settings in,
+        which is the exact shape of the original bug.
+        """
+        before = self._hash_with_default_config()
+
+        original = ReviewConfig.get_smells_config
+
+        def patched(self: ReviewConfig) -> object:
+            cfg = original(self)
+            cfg.max_assertions_without_message += 1
+            return cfg
+
+        monkeypatch.setattr(ReviewConfig, "get_smells_config", patched)
+
+        assert self._hash_with_default_config() != before
+
+    def test_config_hash_changes_when_the_analyzer_set_changes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The analyzer implementations must reach the key too."""
+        before = self._hash_with_default_config()
+
+        classes = dict(_get_static_analyzer_classes())
+        classes.pop(sorted(classes)[0])
+        monkeypatch.setattr(
+            "pytest_review.plugin._get_static_analyzer_classes", lambda: classes
+        )
+
+        assert self._hash_with_default_config() != before
+
+    def test_implementation_hash_is_stable_and_covers_the_analyzer_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The analyzer implementations participate in the key."""
+        baseline = ReviewPlugin._analyzer_implementation_hash()
+        assert baseline == ReviewPlugin._analyzer_implementation_hash()
+
+        classes = dict(_get_static_analyzer_classes())
+        classes.pop(sorted(classes)[0])
+        monkeypatch.setattr(
+            "pytest_review.plugin._get_static_analyzer_classes", lambda: classes
+        )
+
+        assert ReviewPlugin._analyzer_implementation_hash() != baseline
 
 
 class TestParallelAnalysis:

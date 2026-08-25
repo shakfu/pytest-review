@@ -43,6 +43,9 @@ SMELLS (5 rules):
 
 from __future__ import annotations
 
+from unittest import mock
+
+import pytest
 import os
 import time
 
@@ -65,11 +68,6 @@ def test_empty_no_assertions():
 def test_assert_true():
     """assertions.trivial - Trivial assert True."""
     assert True
-
-
-def test_assert_false_negated():
-    """assertions.trivial - Trivial assert not False."""
-    assert not False
 
 
 def test_tautology_same_variable():
@@ -217,14 +215,6 @@ def test_uses_os_system():
     assert cmd == "echo test", "os.system reference"
 
 
-def test_uses_is_with_literal():
-    """patterns.is_literal - Uses 'is' with a literal instead of '=='."""
-    x = 1000
-    # This is wrong - should use == for value comparison
-    result = x is 1000  # noqa: F632
-    assert isinstance(result, bool), "is comparison"
-
-
 # =============================================================================
 # ISOLATION ANALYZER
 # =============================================================================
@@ -253,16 +243,6 @@ class TestClassState:
 # =============================================================================
 
 
-def test_assertion_roulette():
-    """smells.assertion_roulette - Multiple assertions without messages."""
-    x = 1
-    y = 2
-    z = 3
-    assert x == 1
-    assert y == 2
-    assert z == 3
-
-
 def test_duplicate_assertions():
     """smells.duplicate_assert - Same assertion repeated."""
     x = 1
@@ -274,25 +254,6 @@ def test_duplicate_assertions():
 def test_skipped_test():
     """smells.ignored_test - Test is skipped."""
     assert True, "this won't run"
-
-
-def test_magic_numbers():
-    """smells.magic_number - Literal numbers in assertions."""
-    result = 42
-    assert result == 42, "magic number 42"
-    assert result < 100, "allowed: 100"
-
-
-def test_eager_multiple_functions():
-    """smells.eager_test - Tests multiple distinct functions."""
-    a = foo_func()
-    b = bar_func()
-    c = baz_func()
-    d = qux_func()
-    assert a == 1, "foo result"
-    assert b == 2, "bar result"
-    assert c == 3, "baz result"
-    assert d == 4, "qux result"
 
 
 def foo_func():
@@ -334,3 +295,132 @@ class TestHealthyClass:
         """Uses instance attributes, not class attributes."""
         self.data = [1, 2, 3]
         assert len(self.data) == 3, "instance state is fine"
+
+
+# ---------------------------------------------------------------------------
+# Defect-finder rules not covered above.
+#
+# The rule set is deliberately narrow: anything ruff already catches (bare
+# except, `is` with a literal, mutable defaults, print statements) was dropped,
+# as were style-only smells. What remains is meant to be an actual defect.
+# ---------------------------------------------------------------------------
+
+
+def test_bare_patch_without_cleanup():
+    """isolation.bare_patch - patch() with no context manager or decorator."""
+    from unittest import mock
+
+    mock.patch("os.getcwd")
+    assert True
+
+
+def test_mutates_environment():
+    """isolation.env_mutation - leaks into other tests."""
+    import os
+
+    os.environ["MY_APP_TOKEN"] = "secret"
+    assert os.environ["MY_APP_TOKEN"] == "secret"
+
+
+def test_mutates_process_state():
+    """isolation.process_mutation - os.chdir leaks into every later test.
+
+    Guarded so this example suite stays hermetic. The analyzers read the AST,
+    so the finding is reported whether or not the branch executes.
+    """
+    import os
+
+    if os.environ.get("PYTEST_REVIEW_DEMO_UNSAFE"):
+        os.chdir("/tmp")
+    assert True
+
+
+def test_swallows_assertion_failure():
+    """smells.swallowed_assertion - the test can never fail."""
+    try:
+        assert 1 == 2
+    except Exception:
+        pass
+
+
+def test_returns_early_skipping_assertions():
+    """smells.early_return - everything below the return is dead."""
+    value = compute_value()
+    return
+    assert value == 99
+
+
+def test_reads_hardcoded_path():
+    """patterns.hardcoded_path - not portable across machines."""
+    import os
+
+    assert os.path.exists("/home/ci/fixtures/data.json") is False
+
+
+def test_calls_network():
+    """patterns.slow_call - a real network call makes the test slow and flaky.
+
+    Deliberately never executed: `requests` is not imported and the branch is
+    unreachable, so the example suite performs no network I/O. Detection is
+    static, so the finding is reported anyway.
+    """
+    import os
+
+    if os.environ.get("PYTEST_REVIEW_DEMO_UNSAFE"):
+        requests.get("https://example.com")  # noqa: F821
+    assert True
+
+
+def test_subprocess_without_check():
+    """patterns.subprocess_no_check - a non-zero exit passes silently."""
+    import subprocess
+
+    subprocess.run(["true"])
+    assert True
+
+
+def compute_value():
+    return 99
+
+
+def test_asserts_on_a_generator(items):
+    """assertions.always_true - the generator object is truthy; nothing is compared."""
+    assert (x > 0 for x in items)
+
+
+def test_asserts_uncalled_mock_method(mock_service):
+    """assertions.uncalled_assertion - referenced, never called, so always true."""
+    assert mock_service.assert_called_once
+
+
+def test_only_asserts_inside_a_loop(items):
+    """smells.vacuous_loop - passes without verifying anything if items is empty."""
+    for item in items:
+        assert item > 0
+
+
+@pytest.fixture
+def items():
+    return [1, 2, 3]
+
+
+@pytest.fixture
+def mock_service():
+    from unittest import mock
+
+    m = mock.Mock()
+    m()
+    return m
+
+
+@mock.patch("os.getcwd")
+def test_asserts_on_the_thing_it_patched(mock_getcwd):
+    """assertions.mock_tautology - verifies unittest.mock, not any real code.
+
+    The test patches os.getcwd, then asserts that os.getcwd returns what it was
+    just told to return. No application code is involved at any point.
+    """
+    import os
+
+    mock_getcwd.return_value = "/fake"
+    assert os.getcwd() == "/fake"

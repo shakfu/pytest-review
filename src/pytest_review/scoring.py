@@ -73,25 +73,45 @@ class ScoringEngine:
     # Analyzer to category mapping (built-in analyzers)
     ANALYZER_CATEGORIES: dict[str, str] = {
         "assertions": "assertions",
-        "naming": "clarity",
         "isolation": "isolation",
-        "complexity": "simplicity",
+        "leaks": "isolation",
         "patterns": "simplicity",
         "performance": "performance",
         "smells": "clarity",
     }
 
-    # Severity penalties per issue
+    # Severity penalties, expressed on a *per-test* scale: these are the points
+    # a single defective test forfeits within its category, not absolute points
+    # off the final score. An ERROR costs a test all of its credit, so a
+    # category in which every test errors scores 0 regardless of suite size.
     SEVERITY_PENALTIES = {
-        Severity.ERROR: 15.0,
-        Severity.WARNING: 5.0,
-        Severity.INFO: 1.0,
+        Severity.ERROR: 100.0,
+        Severity.WARNING: 35.0,
+        Severity.INFO: 7.0,
     }
 
-    # Critical issue penalties (applied globally)
+    # A single test cannot forfeit more than its own share of a category, so
+    # per-test penalties saturate here. Without this cap, one test carrying
+    # several issues would consume the budget of tests that are perfectly fine.
+    MAX_PENALTY_PER_TEST = 100.0
+
+    # Critical issue penalties, applied globally on top of category scores and
+    # scaled by the fraction of the suite affected (see ``_critical_penalties``).
+    #
+    # ``assertions.missing`` is *derived*, not chosen: when the assertions
+    # category zeroes out, the other categories still hold the rest of the
+    # weight, so charging exactly that remainder makes a suite whose every test
+    # verifies nothing score 0. Expressed against CATEGORY_WEIGHTS so it stays
+    # derived if those weights are ever retuned.
+    #
+    # ``assertions.trivial`` is deliberately *not* given the same treatment: it
+    # fires on a test containing ``assert True`` alongside real, substantive
+    # assertions, so it flags a test carrying dead weight rather than a test
+    # that verifies nothing. Charging it the full remainder would punish tests
+    # that do their job.
     CRITICAL_PENALTIES = {
-        "assertions.missing": 20.0,  # Empty test
-        "assertions.trivial": 10.0,  # assert True
+        "assertions.missing": 100.0 * (1.0 - CATEGORY_WEIGHTS["assertions"]),
+        "assertions.trivial": 25.0,
     }
 
     def __init__(self, extra_categories: dict[str, str] | None = None) -> None:
@@ -132,11 +152,7 @@ class ScoringEngine:
             breakdown.categories.append(category_score)
 
         # Apply critical penalties
-        for result in results:
-            for issue in result.issues:
-                if issue.rule in self.CRITICAL_PENALTIES:
-                    penalty = self.CRITICAL_PENALTIES[issue.rule]
-                    breakdown.penalties.append((issue.rule, penalty))
+        breakdown.penalties.extend(self._critical_penalties(results, total_tests))
 
         # Calculate total score
         weighted_sum = sum(c.weighted_score for c in breakdown.categories)
@@ -175,21 +191,62 @@ class ScoringEngine:
         category = CategoryScore(name=category_name, weight=weight)
         category.issue_count = len(issues)
 
-        if not issues:
+        if not issues or total_tests <= 0:
             category.raw_score = 100.0
         else:
-            # Calculate penalty based on issues
-            total_penalty = 0.0
+            # Sum each test's penalty separately and saturate it, so that one
+            # spectacularly bad test cannot outweigh the whole suite, then take
+            # the mean across the suite. The result is a defect *density*: it is
+            # invariant to suite size, and reaches 0 only when every test in the
+            # suite is defective.
+            per_test: dict[object, float] = {}
             for _, issue in issues:
-                penalty = self.SEVERITY_PENALTIES.get(issue.severity, 0)
-                total_penalty += penalty
+                key = self._test_key(issue)
+                penalty = self.SEVERITY_PENALTIES.get(issue.severity, 0.0)
+                per_test[key] = per_test.get(key, 0.0) + penalty
 
-            # Normalize penalty by number of tests
-            normalized_penalty = total_penalty / total_tests if total_tests > 0 else 0
-            category.raw_score = max(0.0, 100.0 - normalized_penalty)
+            total_penalty = sum(min(p, self.MAX_PENALTY_PER_TEST) for p in per_test.values())
+            category.raw_score = max(0.0, 100.0 - total_penalty / total_tests)
 
         category.weighted_score = category.raw_score * weight
         return category
+
+    @staticmethod
+    def _test_key(issue: Issue) -> object:
+        """Identity of the test an issue belongs to, for per-test aggregation.
+
+        Issues raised by the built-in analyzers always carry a ``test_name``.
+        When one is missing the issue cannot be attributed, so it is given a
+        bucket of its own rather than being silently merged with unrelated
+        issues, which would under-count the defect density.
+        """
+        if issue.test_name is None:
+            return id(issue)
+        return (str(issue.file_path), issue.test_name)
+
+    def _critical_penalties(
+        self,
+        results: list[AnalyzerResult],
+        total_tests: int,
+    ) -> list[tuple[str, float]]:
+        """Global penalties for critical rules, scaled by the share of tests hit.
+
+        One empty test in a 100-test suite is a rounding error; a suite in which
+        every test is empty deserves the full penalty. Counting *tests affected*
+        rather than issues keeps a single test that trips the same rule twice
+        from being charged twice.
+        """
+        affected: dict[str, set[object]] = {}
+        for result in results:
+            for issue in result.issues:
+                if issue.rule in self.CRITICAL_PENALTIES:
+                    affected.setdefault(issue.rule, set()).add(self._test_key(issue))
+
+        penalties: list[tuple[str, float]] = []
+        for rule, tests in affected.items():
+            share = min(1.0, len(tests) / total_tests) if total_tests > 0 else 0.0
+            penalties.append((rule, self.CRITICAL_PENALTIES[rule] * share))
+        return penalties
 
     @staticmethod
     def _score_to_grade(score: float) -> str:

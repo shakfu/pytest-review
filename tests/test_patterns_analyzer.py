@@ -25,41 +25,6 @@ def make_test_info(source: str, name: str = "test_example") -> TestItemInfo:
 
 
 class TestPatternsAnalyzer:
-    def test_detects_bare_except(self) -> None:
-        source = """
-def test_bare_except():
-    try:
-        risky()
-    except:
-        pass
-"""
-        config = ReviewConfig()
-        analyzer = PatternsAnalyzer(config)
-        test_info = make_test_info(source.strip(), "test_bare_except")
-
-        result = analyzer.analyze(test_info)
-
-        bare_except_issues = [i for i in result.issues if i.rule == "patterns.bare_except"]
-        assert len(bare_except_issues) == 1
-        assert bare_except_issues[0].severity == Severity.WARNING
-
-    def test_detects_swallowed_exception(self) -> None:
-        source = """
-def test_swallowed():
-    try:
-        risky()
-    except Exception:
-        pass
-"""
-        config = ReviewConfig()
-        analyzer = PatternsAnalyzer(config)
-        test_info = make_test_info(source.strip(), "test_swallowed")
-
-        result = analyzer.analyze(test_info)
-
-        swallowed_issues = [i for i in result.issues if i.rule == "patterns.swallowed_exception"]
-        assert len(swallowed_issues) == 1
-
     def test_detects_sleep_in_test(self) -> None:
         source = """
 def test_with_sleep():
@@ -77,22 +42,6 @@ def test_with_sleep():
         assert len(sleep_issues) == 1
         assert sleep_issues[0].severity == Severity.WARNING
 
-    def test_detects_print_statement(self) -> None:
-        source = """
-def test_with_print():
-    print("debugging")
-    assert True
-"""
-        config = ReviewConfig()
-        analyzer = PatternsAnalyzer(config)
-        test_info = make_test_info(source.strip(), "test_with_print")
-
-        result = analyzer.analyze(test_info)
-
-        print_issues = [i for i in result.issues if i.rule == "patterns.print_statement"]
-        assert len(print_issues) == 1
-        assert print_issues[0].severity == Severity.INFO
-
     def test_detects_os_system(self) -> None:
         source = """
 def test_with_os_system():
@@ -108,107 +57,6 @@ def test_with_os_system():
 
         os_system_issues = [i for i in result.issues if i.rule == "patterns.os_system"]
         assert len(os_system_issues) == 1
-
-    def test_detects_is_with_literal(self) -> None:
-        source = """
-def test_is_literal():
-    x = 100
-    assert x is 100
-"""
-        config = ReviewConfig()
-        analyzer = PatternsAnalyzer(config)
-        test_info = make_test_info(source.strip(), "test_is_literal")
-
-        result = analyzer.analyze(test_info)
-
-        is_literal_issues = [i for i in result.issues if i.rule == "patterns.is_literal"]
-        assert len(is_literal_issues) == 1
-
-    def test_allows_is_with_none(self) -> None:
-        source = """
-def test_is_none():
-    x = None
-    assert x is None
-"""
-        config = ReviewConfig()
-        analyzer = PatternsAnalyzer(config)
-        test_info = make_test_info(source.strip(), "test_is_none")
-
-        result = analyzer.analyze(test_info)
-
-        is_literal_issues = [i for i in result.issues if i.rule == "patterns.is_literal"]
-        assert len(is_literal_issues) == 0
-
-    def test_allows_is_with_true_false(self) -> None:
-        source = """
-def test_is_bool():
-    x = True
-    assert x is True
-    assert x is not False
-"""
-        config = ReviewConfig()
-        analyzer = PatternsAnalyzer(config)
-        test_info = make_test_info(source.strip(), "test_is_bool")
-
-        result = analyzer.analyze(test_info)
-
-        is_literal_issues = [i for i in result.issues if i.rule == "patterns.is_literal"]
-        assert len(is_literal_issues) == 0
-
-    def test_detects_legacy_mock_import(self) -> None:
-        source = """
-def test_legacy_mock():
-    import mock
-    m = mock.Mock()
-    assert m
-"""
-        config = ReviewConfig()
-        analyzer = PatternsAnalyzer(config)
-        test_info = make_test_info(source.strip(), "test_legacy_mock")
-
-        result = analyzer.analyze(test_info)
-
-        mock_issues = [i for i in result.issues if i.rule == "patterns.legacy_mock"]
-        assert len(mock_issues) == 1
-
-    def test_detects_legacy_mock_from_import(self) -> None:
-        source = """
-def test_legacy_mock_from():
-    from mock import Mock
-    m = Mock()
-    assert m
-"""
-        config = ReviewConfig()
-        analyzer = PatternsAnalyzer(config)
-        test_info = make_test_info(source.strip(), "test_legacy_mock_from")
-
-        result = analyzer.analyze(test_info)
-
-        mock_issues = [i for i in result.issues if i.rule == "patterns.legacy_mock"]
-        assert len(mock_issues) == 1
-
-    def test_clean_test_passes(self) -> None:
-        source = """
-def test_clean():
-    from unittest.mock import Mock
-    m = Mock()
-    result = m.method()
-    assert result is not None
-"""
-        config = ReviewConfig()
-        analyzer = PatternsAnalyzer(config)
-        test_info = make_test_info(source.strip(), "test_clean")
-
-        result = analyzer.analyze(test_info)
-
-        # Should have no critical pattern issues
-        critical_rules = [
-            "patterns.bare_except",
-            "patterns.sleep_in_test",
-            "patterns.legacy_mock",
-        ]
-        critical_issues = [i for i in result.issues if i.rule in critical_rules]
-        assert len(critical_issues) == 0
 
     def test_detects_subprocess_run_without_check(self) -> None:
         source = """
@@ -243,89 +91,6 @@ def test_subprocess_with_check():
         issues = [i for i in result.issues if i.rule == "patterns.subprocess_no_check"]
         assert len(issues) == 0
 
-    def test_detects_broad_pytest_raises(self) -> None:
-        source = """
-def test_broad_raises():
-    with pytest.raises(Exception):
-        do_something()
-"""
-        config = ReviewConfig()
-        analyzer = PatternsAnalyzer(config)
-        test_info = make_test_info(source.strip(), "test_broad_raises")
-
-        result = analyzer.analyze(test_info)
-
-        issues = [i for i in result.issues if i.rule == "patterns.broad_raises"]
-        assert len(issues) == 1
-        assert issues[0].severity == Severity.WARNING
-
-    def test_allows_specific_pytest_raises(self) -> None:
-        source = """
-def test_specific_raises():
-    with pytest.raises(ValueError):
-        do_something()
-"""
-        config = ReviewConfig()
-        analyzer = PatternsAnalyzer(config)
-        test_info = make_test_info(source.strip(), "test_specific_raises")
-
-        result = analyzer.analyze(test_info)
-
-        issues = [i for i in result.issues if i.rule == "patterns.broad_raises"]
-        assert len(issues) == 0
-
-    def test_detects_mutable_default_list(self) -> None:
-        source = """
-def test_mutable_default():
-    def helper(items=[]):
-        items.append(1)
-    helper()
-    assert True
-"""
-        config = ReviewConfig()
-        analyzer = PatternsAnalyzer(config)
-        test_info = make_test_info(source.strip(), "test_mutable_default")
-
-        result = analyzer.analyze(test_info)
-
-        issues = [i for i in result.issues if i.rule == "patterns.mutable_default"]
-        assert len(issues) == 1
-        assert issues[0].severity == Severity.WARNING
-
-    def test_detects_mutable_default_dict(self) -> None:
-        source = """
-def test_mutable_dict():
-    def helper(config={}):
-        pass
-    helper()
-    assert True
-"""
-        config = ReviewConfig()
-        analyzer = PatternsAnalyzer(config)
-        test_info = make_test_info(source.strip(), "test_mutable_dict")
-
-        result = analyzer.analyze(test_info)
-
-        issues = [i for i in result.issues if i.rule == "patterns.mutable_default"]
-        assert len(issues) == 1
-
-    def test_no_mutable_default_with_none(self) -> None:
-        source = """
-def test_safe_default():
-    def helper(items=None):
-        items = items or []
-    helper()
-    assert True
-"""
-        config = ReviewConfig()
-        analyzer = PatternsAnalyzer(config)
-        test_info = make_test_info(source.strip(), "test_safe_default")
-
-        result = analyzer.analyze(test_info)
-
-        issues = [i for i in result.issues if i.rule == "patterns.mutable_default"]
-        assert len(issues) == 0
-
     def test_detects_requests_get(self) -> None:
         source = """
 def test_network_call():
@@ -342,6 +107,28 @@ def test_network_call():
         issues = [i for i in result.issues if i.rule == "patterns.slow_call"]
         assert len(issues) == 1
         assert "requests.get" in issues[0].message
+        # Network I/O is matched against a known module/method list, so it is
+        # reported at the same tier as time.sleep(). Database detection matches
+        # on variable names instead and stays at INFO -- see the test below.
+        assert issues[0].severity == Severity.WARNING
+
+    def test_database_call_stays_info_because_it_matches_on_names(self) -> None:
+        """DB detection is a guess; network detection is not.
+
+        ``cursor.execute()`` matches any variable happening to be named cursor,
+        session, conn or db, so it must not carry the same weight as a call to a
+        known network API.
+        """
+        source = """
+def test_db_call():
+    cursor.execute("SELECT 1")
+    assert True
+"""
+        analyzer = PatternsAnalyzer(ReviewConfig())
+        result = analyzer.analyze(make_test_info(source.strip(), "test_db_call"))
+
+        issues = [i for i in result.issues if i.rule == "patterns.slow_call"]
+        assert len(issues) == 1
         assert issues[0].severity == Severity.INFO
 
     def test_detects_httpx_post(self) -> None:
@@ -395,7 +182,8 @@ def test_local_call():
     def test_stores_metadata(self) -> None:
         source = """
 def test_metadata():
-    print("debug")
+    import time
+    time.sleep(1)
     assert True
 """
         config = ReviewConfig()
